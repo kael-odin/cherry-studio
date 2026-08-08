@@ -7,6 +7,7 @@ import { generateOrderKeySequence } from '@data/services/utils/orderKey'
 import { ErrorCode } from '@shared/data/api/errors'
 import { type CreateKnowledgeBaseDto, KNOWLEDGE_BASE_ERROR_MISSING_EMBEDDING_MODEL } from '@shared/data/types/knowledge'
 import { createUniqueModelId } from '@shared/data/types/model'
+import type { PosixRelativeFilePath } from '@shared/utils/file'
 import { setupTestDatabase } from '@test-helpers/db'
 import { eq } from 'drizzle-orm'
 import { beforeEach, describe, expect, it } from 'vitest'
@@ -100,7 +101,7 @@ describe('KnowledgeBaseService', () => {
       type: 'file',
       data: {
         source: '/docs/source-file.md',
-        relativePath: 'source-file.md'
+        relativePath: 'source-file.md' as PosixRelativeFilePath
       },
       status: 'completed',
       error: null,

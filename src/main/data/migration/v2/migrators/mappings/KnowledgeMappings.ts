@@ -8,7 +8,8 @@ import {
   KNOWLEDGE_ITEM_ERROR_DIRECTORY_NOT_MIGRATED,
   KNOWLEDGE_NOTE_CONTENT_MAX,
   type KnowledgeItemData,
-  type KnowledgeItemStatus
+  type KnowledgeItemStatus,
+  KnowledgeRelativePathSchema
 } from '@shared/data/types/knowledge'
 import type { FileMetadata } from '@shared/data/types/legacyFile'
 import { v4 as uuidv4, v7 as uuidv7 } from 'uuid'
@@ -311,7 +312,11 @@ export const transformKnowledgeItem = (
     // carry foreign separators after a cross-platform restore, so the migrator
     // dedupes and copies the file (located via `storageName`) in `execute`.
     const sanitizedName = sanitizeFilename(file.origin_name)
-    const relativePath = sanitizedName || sanitizeFilename(file.name) || item.id
+    // Every branch already clears the schema — `sanitizeFilename` strips separators
+    // and trailing dots, and `item.id` is a uuid — so `parse` brands rather than
+    // filters. It throws only if that guarantee breaks, which beats writing a row
+    // the read path would then reject.
+    const relativePath = KnowledgeRelativePathSchema.parse(sanitizedName || sanitizeFilename(file.name) || item.id)
     if (!sanitizedName) {
       onWarning?.(
         `Knowledge file item ${item.id} has a blank v1 filename; falling back to ${JSON.stringify(relativePath)}`
@@ -501,7 +506,7 @@ export const expandLegacyDirectoryItem = (
       // Virtual relativePath (the child's own id): the source file is not copied into the base, so
       // this never resolves to a raw/ file. Search reads the migrated vectors, not the file; reindex
       // is rejected because that raw/ file does not exist on disk (see assertSubtreesCanReindex).
-      data: { source, relativePath: childId },
+      data: { source, relativePath: KnowledgeRelativePathSchema.parse(childId) },
       status: 'completed',
       error: null,
       createdAt,

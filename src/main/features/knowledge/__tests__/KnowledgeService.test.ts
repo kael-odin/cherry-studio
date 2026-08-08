@@ -9,6 +9,7 @@ import {
   type KnowledgeItemOf
 } from '@shared/data/types/knowledge'
 import type { AbsoluteFilePath } from '@shared/types/file'
+import type { PosixRelativeFilePath } from '@shared/utils/file'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as PathStorage from '../pathStorage'
@@ -284,7 +285,7 @@ function createFileItem(
     baseId,
     groupId: null,
     type: 'file',
-    data: { source, relativePath: source.split('/').pop() ?? source },
+    data: { source, relativePath: (source.split('/').pop() ?? source) as PosixRelativeFilePath },
     ...lifecycle,
     createdAt: '2026-04-08T00:00:00.000Z',
     updatedAt: '2026-04-08T00:00:00.000Z'
@@ -644,7 +645,7 @@ describe('KnowledgeService', () => {
           fileProcessingJobId: 'fp-job-1',
           pollRound: 0,
           firstScheduledAt: 1779811200000,
-          processedRelativePath: 'source.md'
+          processedRelativePath: 'source.md' as PosixRelativeFilePath
         }
       }
     ])
@@ -926,13 +927,21 @@ describe('KnowledgeService', () => {
 
     const processedSourceFile = {
       ...createFileItem('src-file', 'source-kb', '/docs/report.pdf'),
-      data: { source: '/docs/report.pdf', relativePath: 'report.pdf', indexedRelativePath: 'report.md' }
+      data: {
+        source: '/docs/report.pdf',
+        relativePath: 'report.pdf' as PosixRelativeFilePath,
+        indexedRelativePath: 'report.md' as PosixRelativeFilePath
+      }
     }
     knowledgeItemGetRootItemsByBaseIdMock.mockReturnValueOnce([processedSourceFile])
 
     const restoredFile = {
       ...createFileItem('restored-file', 'restored-kb', '/docs/report.pdf', 'processing'),
-      data: { source: '/docs/report.pdf', relativePath: 'report.pdf', indexedRelativePath: 'report.md' }
+      data: {
+        source: '/docs/report.pdf',
+        relativePath: 'report.pdf' as PosixRelativeFilePath,
+        indexedRelativePath: 'report.md' as PosixRelativeFilePath
+      }
     }
     knowledgeItemCreateActiveMock.mockReturnValueOnce(restoredFile)
     knowledgeItemGetByIdMock.mockReturnValue(restoredFile)
@@ -954,7 +963,11 @@ describe('KnowledgeService', () => {
       'restored-kb',
       expect.objectContaining({
         type: 'file',
-        data: { source: '/docs/report.pdf', relativePath: 'report.pdf', indexedRelativePath: 'report.md' }
+        data: {
+          source: '/docs/report.pdf',
+          relativePath: 'report.pdf' as PosixRelativeFilePath,
+          indexedRelativePath: 'report.md' as PosixRelativeFilePath
+        }
       })
     )
     // The file processor is skipped and indexing runs straight from the artifact (re-embedding still happens).
@@ -976,7 +989,11 @@ describe('KnowledgeService', () => {
     const sourceUrl = {
       ...createNoteItem('source-url', 'source-kb'),
       type: 'url' as const,
-      data: { source: 'https://example.com', url: 'https://example.com', relativePath: 'example-page.md' }
+      data: {
+        source: 'https://example.com',
+        url: 'https://example.com',
+        relativePath: 'example-page.md' as PosixRelativeFilePath
+      }
     }
     knowledgeItemGetRootItemsByBaseIdMock.mockReturnValueOnce([sourceUrl])
 
@@ -998,7 +1015,11 @@ describe('KnowledgeService', () => {
       'restored-kb',
       expect.objectContaining({
         type: 'url',
-        data: { source: 'https://example.com', url: 'https://example.com', relativePath: 'example-page.md' }
+        data: {
+          source: 'https://example.com',
+          url: 'https://example.com',
+          relativePath: 'example-page.md' as PosixRelativeFilePath
+        }
       })
     )
   })
@@ -1185,7 +1206,7 @@ describe('KnowledgeService', () => {
         fileProcessingJobId: 'fp-job-1',
         pollRound: 0,
         firstScheduledAt: expect.any(Number),
-        processedRelativePath: 'source.md'
+        processedRelativePath: 'source.md' as PosixRelativeFilePath
       },
       expect.objectContaining({
         idempotencyKey: 'knowledge:kb-1:file-1:fp-check:fp-job-1:0',
@@ -1248,7 +1269,11 @@ describe('KnowledgeService', () => {
       {
         ...createNoteItem('existing-url', 'kb-1'),
         type: 'url' as const,
-        data: { source: 'https://example.com/old', url: 'https://example.com/old', relativePath: 'example-page.md' }
+        data: {
+          source: 'https://example.com/old',
+          url: 'https://example.com/old',
+          relativePath: 'example-page.md' as PosixRelativeFilePath
+        }
       }
     ])
 
@@ -1275,7 +1300,11 @@ describe('KnowledgeService', () => {
       'kb-1',
       expect.objectContaining({
         type: 'url',
-        data: { source: 'https://example.com/new', url: 'https://example.com/new', relativePath: 'example-page_1.md' }
+        data: {
+          source: 'https://example.com/new',
+          url: 'https://example.com/new',
+          relativePath: 'example-page_1.md' as PosixRelativeFilePath
+        }
       })
     )
   })
@@ -1307,7 +1336,12 @@ describe('KnowledgeService', () => {
     // later hard-failed on the orphan.
     expect(deleteKnowledgeItemFilesBestEffortMock).toHaveBeenCalledWith(
       'kb-1',
-      [expect.objectContaining({ type: 'url', data: expect.objectContaining({ relativePath: 'example-page.md' }) })],
+      [
+        expect.objectContaining({
+          type: 'url',
+          data: expect.objectContaining({ relativePath: 'example-page.md' as PosixRelativeFilePath })
+        })
+      ],
       expect.anything()
     )
   })
@@ -1320,7 +1354,7 @@ describe('KnowledgeService', () => {
       {
         ...createNoteItem('existing-note', 'kb-1'),
         type: 'note' as const,
-        data: { source: 'Meeting notes', content: 'hello', relativePath: 'Meeting notes.md' }
+        data: { source: 'Meeting notes', content: 'hello', relativePath: 'Meeting notes.md' as PosixRelativeFilePath }
       }
     ])
     knowledgeItemCreateActiveMock.mockReturnValueOnce(
@@ -1349,7 +1383,7 @@ describe('KnowledgeService', () => {
       'kb-1',
       expect.objectContaining({
         type: 'file',
-        data: { source: '/Users/me/Meeting notes.md', relativePath: 'Meeting notes_1.md' }
+        data: { source: '/Users/me/Meeting notes.md', relativePath: 'Meeting notes_1.md' as PosixRelativeFilePath }
       })
     )
   })
@@ -1364,7 +1398,7 @@ describe('KnowledgeService', () => {
       {
         ...createNoteItem('existing-note', 'kb-1'),
         type: 'note' as const,
-        data: { source: 'Source', content: 'hello', relativePath: 'source.md' }
+        data: { source: 'Source', content: 'hello', relativePath: 'source.md' as PosixRelativeFilePath }
       }
     ])
 
@@ -1464,7 +1498,7 @@ describe('KnowledgeService', () => {
         fileProcessingJobId: 'fp-job-1',
         pollRound: 0,
         firstScheduledAt: expect.any(Number),
-        processedRelativePath: 'source.md'
+        processedRelativePath: 'source.md' as PosixRelativeFilePath
       },
       expect.objectContaining({
         idempotencyKey: 'knowledge:kb-1:file-1:fp-check:fp-job-1:0',
@@ -1572,7 +1606,7 @@ describe('KnowledgeService', () => {
       pollRound: 1,
       firstScheduledAt: Date.parse('2026-04-08T00:00:00.000Z'),
       parentJobId: 'check-job-0',
-      processedRelativePath: 'source.md'
+      processedRelativePath: 'source.md' as PosixRelativeFilePath
     })
 
     expect(enqueueMock).toHaveBeenCalledWith(
@@ -1583,7 +1617,7 @@ describe('KnowledgeService', () => {
         fileProcessingJobId: 'fp-job-1',
         pollRound: 1,
         firstScheduledAt: Date.parse('2026-04-08T00:00:00.000Z'),
-        processedRelativePath: 'source.md'
+        processedRelativePath: 'source.md' as PosixRelativeFilePath
       },
       expect.objectContaining({
         idempotencyKey: 'knowledge:kb-1:file-1:fp-check:fp-job-1:1',
@@ -1765,7 +1799,7 @@ describe('KnowledgeService', () => {
     const migratedChild: KnowledgeItemOf<'file'> = {
       ...createFileItem('file-1', 'kb-1', '/legacy/abs/x.md', 'completed'),
       groupId: 'dir-1',
-      data: { source: '/legacy/abs/x.md', relativePath: 'file-1' }
+      data: { source: '/legacy/abs/x.md', relativePath: 'file-1' as PosixRelativeFilePath }
     }
     probeKnowledgeSourcePathMock.mockResolvedValue('missing')
     knowledgeItemGetByIdMock.mockReturnValue(root)
@@ -1881,8 +1915,8 @@ describe('KnowledgeService', () => {
       ...item,
       data: {
         ...item.data,
-        relativePath: 'stored-report.pdf',
-        indexedRelativePath: 'stored-report.md'
+        relativePath: 'stored-report.pdf' as PosixRelativeFilePath,
+        indexedRelativePath: 'stored-report.md' as PosixRelativeFilePath
       }
     })
 
@@ -1899,7 +1933,7 @@ describe('KnowledgeService', () => {
       data: {
         source: 'https://example.com/product-docs',
         url: 'https://example.com/product-docs',
-        relativePath: 'Product Docs.md'
+        relativePath: 'Product Docs.md' as PosixRelativeFilePath
       },
       status: 'completed',
       error: null,
@@ -1944,7 +1978,7 @@ describe('KnowledgeService', () => {
     const directory = createDirectoryItem('directory-1', null, 'completed')
     knowledgeItemGetByIdMock.mockReturnValue({
       ...directory,
-      data: { ...directory.data, relativePath: 'stored-directory' }
+      data: { ...directory.data, relativePath: 'stored-directory' as PosixRelativeFilePath }
     })
 
     expect(() => service.getFilePath('directory-1')).toThrow(
