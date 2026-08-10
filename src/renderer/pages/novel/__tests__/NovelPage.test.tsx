@@ -7,11 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   request: vi.fn(),
-  selectFolder: vi.fn()
+  selectFolder: vi.fn(),
+  ipcEventHandlers: [] as Array<(payload: unknown) => void>
 }))
 
 vi.mock('@renderer/ipc', () => ({
-  ipcApi: { request: (...args: unknown[]) => mocks.request(...args) }
+  ipcApi: { request: (...args: unknown[]) => mocks.request(...args) },
+  useIpcOn: (_event: string, handler: (payload: unknown) => void) => {
+    mocks.ipcEventHandlers.push(handler)
+  }
 }))
 
 vi.mock('@renderer/services/toast', () => ({
@@ -91,7 +95,15 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  mocks.ipcEventHandlers.length = 0
 })
+
+/** Dispatch an engine event through the mocked useIpcOn subscription. */
+function emitEngineEvent(event: string, data: Record<string, unknown>): void {
+  for (const handler of mocks.ipcEventHandlers) {
+    handler({ event, data })
+  }
+}
 
 describe('NovelPage', () => {
   it('shows the shelf with books and opens a book', async () => {
@@ -151,7 +163,7 @@ describe('NovelPage', () => {
     })
   })
 
-  it('triggers write-next and refreshes the chapter list', async () => {
+  it('triggers write-next, shows running state, and refreshes on SSE completion', async () => {
     mocks.request.mockImplementation(async (route: string, input?: any) => {
       if (route === 'novel.get_status') return projectStatus
       if (route === 'novel.list_books') return books
@@ -173,6 +185,19 @@ describe('NovelPage', () => {
       expect(calls).toHaveLength(1)
       expect(calls[0][1]).toEqual({ bookId: 'demo' })
     })
+
+    // Engine broadcasts start — the panel switches to the running label
+    // (both write-next buttons show it).
+    emitEngineEvent('write:start', { bookId: 'demo' })
+    expect(await screen.findAllByText('novel.action_running_write')).toHaveLength(2)
+
+    // Engine broadcasts completion — running state clears and chapters refresh.
+    emitEngineEvent('write:complete', { bookId: 'demo', chapterNumber: 4, title: '第四章', wordCount: 2000 })
+    await waitFor(() => {
+      expect(screen.queryAllByText('novel.action_running_write')).toHaveLength(0)
+    })
+    const listCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.list_chapters')
+    expect(listCalls.length).toBeGreaterThanOrEqual(2)
   })
 
   it('opens a workspace via folder picker when no workspace is open', async () => {

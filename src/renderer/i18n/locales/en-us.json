@@ -4688,6 +4688,13 @@
     "tip": "If the response is successful, then only messages exceeding 30 seconds will trigger a reminder"
   },
   "novel": {
+    "action_failed": "AI operation failed, see engine error",
+    "action_running_audit": "Auditing…",
+    "action_running_draft": "Drafting…",
+    "action_running_revise": "Revising…",
+    "action_running_rewrite": "Rewriting…",
+    "action_running_write": "Writing…",
+    "action_succeeded": "AI writing finished",
     "approve": "Approve",
     "audit_issues": "Audit issues",
     "back": "Back to shelf",

@@ -1,9 +1,9 @@
 import { Badge, Button, Input, Skeleton, Textarea } from '@cherrystudio/ui'
 import { loggerService } from '@logger'
-import { ipcApi } from '@renderer/ipc'
+import { ipcApi, useIpcOn } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
 import { IpcError } from '@shared/ipc/errors/IpcError'
-import type { OutputFor } from '@shared/ipc/types'
+import type { EventPayload, OutputFor } from '@shared/ipc/types'
 import {
   ArrowLeft,
   BookOpen,
@@ -53,6 +53,15 @@ function statusOf(status: string | undefined): { label: string; tone: BadgeTone 
   return (status && STATUS_STYLE[status]) || { label: status ?? 'novel.status_unknown', tone: 'secondary' }
 }
 
+/** 运行中的动作 → 进度文案 i18n key。 */
+const RUNNING_LABELS: Record<string, string> = {
+  write: 'novel.action_running_write',
+  draft: 'novel.action_running_draft',
+  audit: 'novel.action_running_audit',
+  revise: 'novel.action_running_revise',
+  rewrite: 'novel.action_running_rewrite'
+}
+
 /**
  * 中文友好的小说工作台：书架 → 书详情 → 章节读写 → AI 写作/审稿。
  * 数据来自 InkOS 引擎（经主进程 NovelService 转发）。
@@ -87,8 +96,11 @@ function NovelPage() {
   const [chapters, setChapters] = useState<ChapterSummary[]>([])
   const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null)
   const [selectedChapter, setSelectedChapter] = useState<number | null>(null)
-  const [actionBusy, setActionBusy] = useState(false)
-  const [actionLabel, setActionLabel] = useState('')
+
+  // ── 引擎实时进度（SSE 事件驱动：bookId → 运行中的动作） ──
+  const [activeRuns, setActiveRuns] = useState<Record<string, string>>({})
+  const busy = book ? activeRuns[book.id] !== undefined : false
+  const actionLabel = book ? (activeRuns[book.id] ?? '') : ''
 
   // ── 手写编辑 ──
   const [editing, setEditing] = useState(false)
@@ -169,19 +181,53 @@ function NovelPage() {
     setChapters([])
     setChapterDetail(null)
     setSelectedChapter(null)
-    setActionBusy(false)
-    setActionLabel('')
     setEditing(false)
     setEditContent('')
     void refreshBooks()
   }, [refreshBooks])
 
-  // ── AI 动作（引擎 fire-and-forget；完成后刷新目录） ──
+  // ── 引擎 SSE 事件 → 实时进度/完成刷新 ──
+  useIpcOn('novel.engine_event', (payload: EventPayload<'novel.engine_event'>) => {
+    const data = payload.data as { bookId?: string } | null
+    if (!data?.bookId) return
+    const bookId = data.bookId
+    const event = payload.event
+
+    // 动作开始 → 进入进行中状态（write/draft 是 fire-and-forget，这是可靠进度源）
+    const startMatch = /^(write|draft|audit|revise|rewrite):start$/.exec(event)
+    if (startMatch) {
+      setActiveRuns((prev) => ({ ...prev, [bookId]: startMatch[1] }))
+      return
+    }
+
+    // 动作结束 → 清除进行中状态；若当前正在看这本书则刷新目录
+    const endMatch = /^(write|draft|audit|revise|rewrite|book):(complete|error)$/.exec(event)
+    if (endMatch) {
+      const kind = endMatch[1]
+      setActiveRuns((prev) => {
+        const next = { ...prev }
+        delete next[bookId]
+        return next
+      })
+      if (book && book.id === bookId) {
+        void refreshChapters(bookId)
+      }
+      if (kind === 'write' && event === 'write:complete') {
+        toast.success(t('novel.action_succeeded'))
+      } else if (event === 'book:error') {
+        toast.error((data as { error?: string }).error ?? t('novel.action_failed'))
+      } else if (event.endsWith(':error')) {
+        toast.error(t('novel.action_failed'))
+      }
+      void refreshBooks()
+      return
+    }
+  })
+
+  // ── AI 动作（write-next fire-and-forget；audit/revise 阻塞至完成） ──
   const runAction = useCallback(
     async (kind: 'write_next' | 'audit' | 'revise', chapterNumber?: number) => {
       if (!book) return
-      setActionBusy(true)
-      setActionLabel(kind)
       try {
         if (kind === 'write_next') {
           await ipcApi.request('novel.write_next', { bookId: book.id })
@@ -195,24 +241,20 @@ function NovelPage() {
           } else if (result.passed === true) {
             toast.success(t('novel.run_succeeded'))
           }
+          await refreshChapters(book.id)
         } else {
           await ipcApi.request('novel.revise_chapter', {
             bookId: book.id,
             chapterNumber: chapterNumber ?? 1
           })
+          await refreshChapters(book.id)
         }
-        // 引擎异步写作/修订完成后刷新目录与章节
-        await refreshChapters(book.id)
-        if (book) void openBook(book.id)
       } catch (err) {
         logger.error('AI run failed', err as Error)
         toast.error(tError(err))
-      } finally {
-        setActionBusy(false)
-        setActionLabel('')
       }
     },
-    [book, refreshChapters, openBook, t, tError]
+    [book, refreshChapters, t, tError]
   )
 
   const approveChapter = useCallback(
@@ -548,7 +590,7 @@ function NovelPage() {
             <span>
               {t('novel.engine_error_title')}（{engineError.code}）
             </span>
-            <Button variant="outline" size="sm" onClick={() => void refreshChapters(book.id)} disabled={actionBusy}>
+            <Button variant="outline" size="sm" onClick={() => void refreshChapters(book.id)} disabled={busy}>
               {t('novel.engine_error_retry')}
             </Button>
           </div>
@@ -570,13 +612,13 @@ function NovelPage() {
               </Badge>
             </div>
           </div>
-          <Button onClick={() => void runAction('write_next')} disabled={actionBusy}>
-            {actionBusy && actionLabel === 'write_next' ? (
+          <Button onClick={() => void runAction('write_next')} disabled={busy}>
+            {busy && actionLabel === 'write' ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Sparkles className="size-4" />
             )}
-            {t('novel.write_next')}
+            {busy && actionLabel === 'write' ? t(RUNNING_LABELS[actionLabel]) : t('novel.write_next')}
           </Button>
         </div>
 
@@ -612,12 +654,13 @@ function NovelPage() {
               })
             )}
             <div className="mt-2 border-t pt-2">
-              <Button
-                variant="outline"
-                className="w-full"
-                onClick={() => void runAction('write_next')}
-                disabled={actionBusy}>
-                <PenLine className="size-4" /> {t('novel.write_next')}
+              <Button variant="outline" className="w-full" onClick={() => void runAction('write_next')} disabled={busy}>
+                {busy && actionLabel === 'write' ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <PenLine className="size-4" />
+                )}{' '}
+                {busy && actionLabel === 'write' ? t(RUNNING_LABELS[actionLabel]) : t('novel.write_next')}
               </Button>
             </div>
           </div>
@@ -637,11 +680,7 @@ function NovelPage() {
                 <div className="mb-3 flex flex-wrap gap-2">
                   {editing ? (
                     <>
-                      <Button
-                        variant="default"
-                        size="sm"
-                        onClick={() => void saveEdit()}
-                        disabled={saving || actionBusy}>
+                      <Button variant="default" size="sm" onClick={() => void saveEdit()} disabled={saving || busy}>
                         {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         {t('novel.save')}
                       </Button>
@@ -651,39 +690,37 @@ function NovelPage() {
                     </>
                   ) : (
                     <>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => startEditing(chapterDetail)}
-                        disabled={actionBusy}>
+                      <Button variant="outline" size="sm" onClick={() => startEditing(chapterDetail)} disabled={busy}>
                         <PenLine className="size-4" /> {t('novel.edit')}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void runAction('audit', selectedMeta.number)}
-                        disabled={actionBusy}>
-                        {t('novel.run_audit')}
+                        disabled={busy}>
+                        {busy && actionLabel === 'audit' ? <Loader2 className="size-4 animate-spin" /> : null}
+                        {busy && actionLabel === 'audit' ? t(RUNNING_LABELS[actionLabel]) : t('novel.run_audit')}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void runAction('revise', selectedMeta.number)}
-                        disabled={actionBusy}>
-                        {t('novel.run_revise')}
+                        disabled={busy}>
+                        {busy && actionLabel === 'revise' ? <Loader2 className="size-4 animate-spin" /> : null}
+                        {busy && actionLabel === 'revise' ? t(RUNNING_LABELS[actionLabel]) : t('novel.run_revise')}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void approveChapter(selectedMeta.number)}
-                        disabled={actionBusy}>
+                        disabled={busy}>
                         {t('novel.approve')}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         onClick={() => void rejectChapter(selectedMeta.number)}
-                        disabled={actionBusy}>
+                        disabled={busy}>
                         {t('novel.reject')}
                       </Button>
                     </>
@@ -741,7 +778,7 @@ function NovelPage() {
     chapters,
     chapterDetail,
     selectedChapter,
-    actionBusy,
+    busy,
     actionLabel,
     engineError,
     editing,

@@ -4688,6 +4688,13 @@
     "tip": "如果响应成功，则只针对超过30秒的消息进行提醒"
   },
   "novel": {
+    "action_failed": "AI 操作失败，请查看引擎错误",
+    "action_running_audit": "审稿中…",
+    "action_running_draft": "草稿写作中…",
+    "action_running_revise": "修订中…",
+    "action_running_rewrite": "重写中…",
+    "action_running_write": "AI 续写中…",
+    "action_succeeded": "AI 写作完成",
     "approve": "通过",
     "audit_issues": "审稿问题",
     "back": "返回书架",
