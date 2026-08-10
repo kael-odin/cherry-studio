@@ -20,8 +20,8 @@ export class EngineApiError extends Error {
   }
 }
 
-/** Timeout for the engine's HTTP API becoming reachable after spawn. */
-const READY_TIMEOUT_MS = 30_000
+/** Timeout for the engine's HTTP API becoming reachable after spawn. Cold boots on Windows can take ~40s. */
+const READY_TIMEOUT_MS = 60_000
 
 /**
  * HTTP client over the InkOS API server process (VISION §7.1: the engine is a
@@ -38,6 +38,8 @@ export class InkEngineClient {
   private readonly binary: string
   private readonly entry: string
   private readonly root: string
+  /** The engine spawn (once it started binding) + its ready-wait, if in flight. */
+  private startPromise: Promise<void> | null = null
 
   constructor(binary: string, entry: string, root: string, port: number) {
     this.binary = binary
@@ -56,11 +58,24 @@ export class InkEngineClient {
 
   /**
    * Spawn the engine and wait for its HTTP API to become reachable.
+   * Concurrent callers share one start (a second `start()` while the first is
+   * still binding merely awaits the same promise) — without this, two IPC
+   * requests racing in after a cold boot spawn TWO engine processes on the
+   * same port, the loser dies with EADDRINUSE and everyone times out.
    * Retries with a fresh port when the previous one was taken.
-   * Fails with a clear error when the engine binary/entry is missing.
    */
   async start(): Promise<void> {
     if (this.proc) return
+    if (this.startPromise) return this.startPromise
+    this.startPromise = this.doStart()
+    try {
+      await this.startPromise
+    } finally {
+      this.startPromise = null
+    }
+  }
+
+  private async doStart(): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) this.port = pickPort()
       this.baseUrl = `http://127.0.0.1:${this.port}`
