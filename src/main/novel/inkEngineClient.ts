@@ -9,6 +9,17 @@ const logger = loggerService.withContext('InkEngineClient')
 /** HTTP 404 — the engine resource does not exist (used to map to null). */
 export class NotFoundError extends Error {}
 
+/** Engine error envelope — the code survives for the UI to branch on. */
+export class EngineApiError extends Error {
+  readonly code: string
+
+  constructor(code: string, message: string) {
+    super(message)
+    this.name = 'EngineApiError'
+    this.code = code
+  }
+}
+
 /** Timeout for the engine's HTTP API becoming reachable after spawn. */
 const READY_TIMEOUT_MS = 30_000
 
@@ -131,9 +142,13 @@ export class InkEngineClient {
         if (response.status === 404) throw new NotFoundError(`InkOS 404: ${path}`)
         let message = `InkOS ${method} ${path} failed (${response.status})`
         try {
-          const parsed = JSON.parse(text) as { error?: { message?: string } }
+          const parsed = JSON.parse(text) as { error?: { code?: string; message?: string } }
+          if (parsed.error?.code && parsed.error?.message) {
+            throw new EngineApiError(parsed.error.code, parsed.error.message)
+          }
           if (parsed.error?.message) message = parsed.error.message
-        } catch {
+        } catch (error) {
+          if (error instanceof EngineApiError) throw error
           // keep the generic message
         }
         throw new Error(message)

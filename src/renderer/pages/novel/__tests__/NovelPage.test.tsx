@@ -27,7 +27,8 @@ const projectStatus: OutputFor<'novel.get_status'> = {
   language: 'zh',
   languageExplicit: true,
   model: 'noop-model',
-  provider: 'openai'
+  provider: 'openai',
+  baseUrl: 'https://example.invalid/v1'
 }
 
 const books: OutputFor<'novel.list_books'> = [
@@ -249,6 +250,34 @@ describe('NovelPage', () => {
     expect(await screen.findByText('novel.audit_issues')).toBeInTheDocument()
     expect(screen.getByText('时间线不一致')).toBeInTheDocument()
     expect(screen.getByText(/待修：退潮时间需与开头统一/)).toBeInTheDocument()
+  })
+
+  it('shows the LLM guidance banner when no model is configured', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
+      return null
+    })
+
+    render(<NovelPage />)
+    expect(await screen.findByText('novel.llm_hint_title')).toBeInTheDocument()
+    expect(screen.getByText('novel.llm_hint_description')).toBeInTheDocument()
+  })
+
+  it('does not show the LLM guidance banner when a model is configured', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return { ...projectStatus, model: 'gpt-5.2' }
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
+      return null
+    })
+
+    render(<NovelPage />)
+    expect(await screen.findByText('novel.shelf_heading')).toBeInTheDocument()
+    expect(screen.queryByText('novel.llm_hint_title')).not.toBeInTheDocument()
   })
 
   it('initializes the sample workspace via one-click start', async () => {

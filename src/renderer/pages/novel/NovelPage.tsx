@@ -2,6 +2,7 @@ import { Badge, Button, Input, Skeleton, Textarea } from '@cherrystudio/ui'
 import { loggerService } from '@logger'
 import { ipcApi } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
+import { IpcError } from '@shared/ipc/errors/IpcError'
 import type { OutputFor } from '@shared/ipc/types'
 import {
   ArrowLeft,
@@ -24,6 +25,11 @@ const logger = loggerService.withContext('NovelPage')
 type BookSummary = OutputFor<'novel.list_books'>[number]
 type ChapterSummary = OutputFor<'novel.list_chapters'>['chapters'][number]
 type ChapterDetail = OutputFor<'novel.get_chapter'>
+
+/** IpcError code（主进程映射的引擎错误码）→ i18n key。 */
+const KNOWN_ERROR_KEYS: Record<string, string> = {
+  'novel.error_llm_config': 'novel.error_llm_config'
+}
 
 /** 章节目录状态 → 中文徽章/颜色映射. */
 type BadgeTone = 'default' | 'secondary' | 'destructive' | 'outline'
@@ -56,6 +62,17 @@ function NovelPage() {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
 
+  /** 已知引擎错误码 → 中文提示；未知错误回退原文。 */
+  const tError = useCallback(
+    (err: unknown): string => {
+      if (err instanceof IpcError && KNOWN_ERROR_KEYS[err.code]) {
+        return t(KNOWN_ERROR_KEYS[err.code])
+      }
+      return err instanceof Error ? err.message : String(err)
+    },
+    [t]
+  )
+
   // ── 书架 ──
   const [books, setBooks] = useState<BookSummary[]>([])
   const [booksLoading, setBooksLoading] = useState(false)
@@ -81,27 +98,34 @@ function NovelPage() {
   // ── 引擎错误横幅 ──
   const [engineError, setEngineError] = useState<{ code: string; message: string } | null>(null)
 
+  // ── 项目状态（新手引导：LLM 是否可用） ──
+  const [project, setProject] = useState<OutputFor<'novel.get_status'>>(null)
+  const llmUnconfigured = project !== null && (project.model === '' || project.model === 'noop-model')
+
   const refreshBooks = useCallback(async () => {
     setBooksLoading(true)
     try {
       setBooks(await ipcApi.request('novel.list_books'))
     } catch (err) {
       logger.error('Failed to list books', err as Error)
-      toast.error(String(err))
+      toast.error(tError(err))
     } finally {
       setBooksLoading(false)
     }
-  }, [])
+  }, [tError])
 
-  const refreshChapters = useCallback(async (bookId: string) => {
-    try {
-      const { chapters: list } = await ipcApi.request('novel.list_chapters', { bookId })
-      setChapters(list)
-    } catch (err) {
-      logger.error('Failed to list chapters', err as Error)
-      toast.error(String(err))
-    }
-  }, [])
+  const refreshChapters = useCallback(
+    async (bookId: string) => {
+      try {
+        const { chapters: list } = await ipcApi.request('novel.list_chapters', { bookId })
+        setChapters(list)
+      } catch (err) {
+        logger.error('Failed to list chapters', err as Error)
+        toast.error(tError(err))
+      }
+    },
+    [tError]
+  )
 
   const openBook = useCallback(
     async (id: string) => {
@@ -116,26 +140,29 @@ function NovelPage() {
         await refreshChapters(id)
       } catch (err) {
         logger.error('Failed to open book', err as Error)
-        toast.error(String(err))
+        toast.error(tError(err))
       } finally {
         setLoading(false)
       }
     },
-    [refreshChapters, t]
+    [refreshChapters, t, tError]
   )
 
-  const selectChapter = useCallback(async (bookId: string, number: number) => {
-    setSelectedChapter(number)
-    setChapterDetail(null)
-    setEditing(false)
-    setEditContent('')
-    try {
-      setChapterDetail(await ipcApi.request('novel.get_chapter', { bookId, chapterNumber: number }))
-    } catch (err) {
-      logger.error('Failed to read chapter', err as Error)
-      toast.error(String(err))
-    }
-  }, [])
+  const selectChapter = useCallback(
+    async (bookId: string, number: number) => {
+      setSelectedChapter(number)
+      setChapterDetail(null)
+      setEditing(false)
+      setEditContent('')
+      try {
+        setChapterDetail(await ipcApi.request('novel.get_chapter', { bookId, chapterNumber: number }))
+      } catch (err) {
+        logger.error('Failed to read chapter', err as Error)
+        toast.error(tError(err))
+      }
+    },
+    [tError]
+  )
 
   const backToShelf = useCallback(() => {
     setBook(null)
@@ -179,13 +206,13 @@ function NovelPage() {
         if (book) void openBook(book.id)
       } catch (err) {
         logger.error('AI run failed', err as Error)
-        toast.error(String(err))
+        toast.error(tError(err))
       } finally {
         setActionBusy(false)
         setActionLabel('')
       }
     },
-    [book, refreshChapters, openBook, t]
+    [book, refreshChapters, openBook, t, tError]
   )
 
   const approveChapter = useCallback(
@@ -197,10 +224,10 @@ function NovelPage() {
         await refreshChapters(book.id)
       } catch (err) {
         logger.error('Failed to approve chapter', err as Error)
-        toast.error(String(err))
+        toast.error(tError(err))
       }
     },
-    [book, refreshChapters, t]
+    [book, refreshChapters, t, tError]
   )
 
   const rejectChapter = useCallback(
@@ -212,10 +239,10 @@ function NovelPage() {
         await refreshChapters(book.id)
       } catch (err) {
         logger.error('Failed to reject chapter', err as Error)
-        toast.error(String(err))
+        toast.error(tError(err))
       }
     },
-    [book, refreshChapters, t]
+    [book, refreshChapters, t, tError]
   )
 
   // ── 手写编辑 ──
@@ -267,9 +294,9 @@ function NovelPage() {
       }
     } catch (err) {
       logger.error('Failed to open workspace', err as Error)
-      toast.error(String(err))
+      toast.error(tError(err))
     }
-  }, [refreshBooks])
+  }, [refreshBooks, tError])
 
   // ── 初始化：一键生成示例工作区（首次使用） ──
   const initWorkspace = useCallback(async () => {
@@ -280,11 +307,11 @@ function NovelPage() {
       await refreshBooks()
     } catch (err) {
       logger.error('Failed to init workspace', err as Error)
-      toast.error(String(err))
+      toast.error(tError(err))
     } finally {
       setLoading(false)
     }
-  }, [refreshBooks])
+  }, [refreshBooks, tError])
 
   // ── 首次挂载：自动打开上次工作区 ──
   useEffect(() => {
@@ -293,6 +320,7 @@ function NovelPage() {
         const status = await ipcApi.request('novel.get_status')
         if (status) {
           setOpen(true)
+          setProject(status)
           await refreshBooks()
         }
       } catch {
@@ -354,11 +382,11 @@ function NovelPage() {
       }
     } catch (err) {
       logger.error('Failed to create book', err as Error)
-      toast.error(String(err))
+      toast.error(tError(err))
     } finally {
       setCreating(false)
     }
-  }, [createTitle, createGenre, createTargetChapters, createWordCount, refreshBooks, openBook, t])
+  }, [createTitle, createGenre, createTargetChapters, createWordCount, refreshBooks, openBook, t, tError])
 
   const renderShelf = useMemo(
     () => (
@@ -384,6 +412,16 @@ function NovelPage() {
             </Button>
           </div>
         </div>
+
+        {/* 新手引导：LLM 未配置时提示 */}
+        {llmUnconfigured ? (
+          <div className="rounded-2xl border border-primary/30 bg-primary/5 p-4">
+            <div className="mb-1 flex items-center gap-2 font-medium">
+              <Sparkles className="size-4 text-primary" /> {t('novel.llm_hint_title')}
+            </div>
+            <p className="text-muted-foreground text-sm">{t('novel.llm_hint_description')}</p>
+          </div>
+        ) : null}
 
         {booksLoading ? (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -485,6 +523,7 @@ function NovelPage() {
       books,
       booksLoading,
       engineError,
+      llmUnconfigured,
       openWorkspace,
       initWorkspace,
       refreshBooks,

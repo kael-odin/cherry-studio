@@ -68,7 +68,8 @@ export const novelRequestSchemas = {
         language: z.string(),
         languageExplicit: z.boolean(),
         model: z.string(),
-        provider: z.string()
+        provider: z.string(),
+        baseUrl: z.string().optional()
       })
       .nullable()
   }),

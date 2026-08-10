@@ -3,13 +3,20 @@ import path from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { InkEngineClient, NotFoundError, pickPort } from '../inkEngineClient'
+import { EngineApiError, InkEngineClient, NotFoundError, pickPort } from '../inkEngineClient'
 
 describe('InkEngineClient error mapping', () => {
   it('NotFoundError is an Error subclass', () => {
     const err = new NotFoundError('InkOS 404: /api/v1/books/missing')
     expect(err).toBeInstanceOf(Error)
     expect(err.message).toContain('404')
+  })
+
+  it('EngineApiError carries the engine error code', () => {
+    const err = new EngineApiError('LLM_CONFIG_ERROR', 'Studio LLM API key not set.')
+    expect(err).toBeInstanceOf(Error)
+    expect(err.code).toBe('LLM_CONFIG_ERROR')
+    expect(err.message).toContain('API key')
   })
 
   it('maps 404 responses to NotFoundError', async () => {
