@@ -18,5 +18,6 @@ export const novelHandlers: IpcHandlersFor<typeof novelRequestSchemas> = {
   'novel.list_chapters': async () => application.get('NovelService').listChapters(),
   'novel.read_chapter': async (input) => application.get('NovelService').readChapter(input.chapterId),
   'novel.scene_context': async (input) => application.get('NovelService').sceneContext(input.chapterId),
-  'novel.list_reviews': async (input) => application.get('NovelService').listReviews(input.chapterId)
+  'novel.list_reviews': async (input) => application.get('NovelService').listReviews(input.chapterId),
+  'novel.state_read': async (input) => application.get('NovelService').stateRead(input.asOfChapter ?? 0)
 }

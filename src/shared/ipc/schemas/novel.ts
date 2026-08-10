@@ -79,6 +79,62 @@ const workspaceStatusSchema = z.object({
   specVersion: z.string().optional()
 })
 
+const characterSnapshotSchema = z.object({
+  location: z.string().optional(),
+  psychology: z.string().optional(),
+  knowledge: z.array(z.string()).optional(),
+  inventory: z.array(z.string()).optional(),
+  relationships: z.record(z.string(), z.string()).optional(),
+  status: z.string().optional(),
+  notes: z.string().optional()
+})
+
+const characterStateSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  aliases: z.array(z.string()).optional(),
+  current: characterSnapshotSchema,
+  asOfChapter: z.number().int().nonnegative()
+})
+
+const foreshadowStateSchema = z.object({
+  id: z.string(),
+  planted_at: z.string().optional(),
+  resolved_at: z.string().optional(),
+  status: z.string().optional(),
+  description: z.string().optional(),
+  payoff: z.string().optional()
+})
+
+const timelineEventSchema = z.object({
+  id: z.string(),
+  chapter: z.string(),
+  absolute_time: z.string().optional(),
+  narrative_time: z.string().optional(),
+  description: z.string(),
+  participants: z.array(z.string()).optional()
+})
+
+const povStateSchema = z.object({
+  chapter: z.string().optional(),
+  viewpoint: z.string().optional(),
+  tense: z.string().optional(),
+  notes: z.string().optional()
+})
+
+const novelStateSchema = z.object({
+  world: z.object({
+    name: z.string().optional(),
+    era: z.string().optional(),
+    premise: z.string().optional(),
+    rules: z.array(z.string()).optional()
+  }),
+  characters: z.array(characterStateSchema),
+  foreshadow: z.array(foreshadowStateSchema),
+  timeline: z.array(timelineEventSchema),
+  pov: povStateSchema.nullable()
+})
+
 // Chapter ids follow `vNN-cNNN` (mirrors the reference runtime's chapterNumber).
 const chapterIdSchema = z.string().regex(/^v\d+-c\d+$/, 'chapter_id must match vNN-cNNN')
 
@@ -110,5 +166,10 @@ export const novelRequestSchemas = {
   'novel.list_reviews': defineRoute({
     input: z.object({ chapterId: chapterIdSchema }),
     output: z.array(reviewRecordSummarySchema)
+  }),
+  'novel.state_read': defineRoute({
+    // as_of_chapter: latest snapshot at or before this chapter (0/omitted = current).
+    input: z.object({ asOfChapter: z.number().int().nonnegative().optional() }),
+    output: novelStateSchema
   })
 }

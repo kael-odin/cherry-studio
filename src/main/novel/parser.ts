@@ -185,3 +185,187 @@ export function chapterScenes(doc: ChapterDocument): SceneInfo[] {
     prose: sceneProse(doc.body, plans, index)
   }))
 }
+
+/* ------------------------------------------------------------------ *
+ * State reading (read-only, as-of-chapter aware).                     *
+ * Mirrors the reference runtime's buildStateSummary semantics:        *
+ * character current is the latest history snapshot at or before the   *
+ * requested chapter; foreshadow/timeline/pov are filtered the same    *
+ * way. The repo files are the single source of truth — no mutation.   *
+ * ------------------------------------------------------------------ */
+
+export interface CharacterSnapshot {
+  location?: string
+  psychology?: string
+  knowledge?: string[]
+  inventory?: string[]
+  relationships?: Record<string, string>
+  status?: string
+  notes?: string
+}
+
+export interface CharacterState {
+  id: string
+  name: string
+  aliases?: string[]
+  current: CharacterSnapshot
+  /** as_of_chapter of the snapshot shown (current view: latest history chapter). */
+  asOfChapter: number
+}
+
+export interface ForeshadowState {
+  id: string
+  /** Raw file keys are snake_case (`planted_at`/`resolved_at`), mirroring the repo format. */
+  planted_at?: string
+  resolved_at?: string
+  status?: string
+  description?: string
+  payoff?: string
+}
+
+export interface TimelineEvent {
+  id: string
+  chapter: string
+  absolute_time?: string
+  narrative_time?: string
+  description: string
+  participants?: string[]
+}
+
+export interface PovState {
+  chapter?: string
+  viewpoint?: string
+  tense?: string
+  notes?: string
+}
+
+export interface NovelState {
+  world: {
+    name?: string
+    era?: string
+    premise?: string
+    rules?: string[]
+  }
+  characters: CharacterState[]
+  foreshadow: ForeshadowState[]
+  timeline: TimelineEvent[]
+  pov: PovState | null
+}
+
+/** Raw `current`/history snapshot of a character state file. */
+interface CharacterDocument {
+  id: string
+  name: string
+  aliases?: string[]
+  current?: CharacterSnapshot
+  history?: Array<{ as_of_chapter: number; snapshot: CharacterSnapshot }>
+}
+
+const stateDir = (root: string) => `${root}/.novel/state`
+
+function readStateFile<T>(root: string, name: string): T | null {
+  try {
+    return JSON.parse(readFileSync(`${stateDir(root)}/${name}`, 'utf8')) as T
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Latest character snapshot at or before the given chapter (0 = current).
+ * Mirrors the reference runtime: the current view is the newest history
+ * entry; an as-of view is the newest entry with as_of_chapter <= chapter.
+ */
+export function characterStateAt(root: string, id: string, asOf = 0): CharacterState | null {
+  const document = readStateFile<CharacterDocument>(root, `characters/${id}.json`)
+  if (!document?.id) return null
+  let snapshot = document.current ?? {}
+  let chapter = 0
+  if (asOf > 0) {
+    const best = (document.history ?? []).reduce<{ chapter: number; snapshot?: CharacterSnapshot } | null>(
+      (best, entry) =>
+        entry.as_of_chapter > 0 && entry.as_of_chapter <= asOf && (!best || entry.as_of_chapter > best.chapter)
+          ? { chapter: entry.as_of_chapter, snapshot: entry.snapshot }
+          : best,
+      null
+    )
+    if (best?.snapshot) {
+      snapshot = best.snapshot
+      chapter = best.chapter
+    }
+  } else if (document.history && document.history.length > 0) {
+    const latest = document.history[document.history.length - 1]
+    chapter = latest.as_of_chapter
+  }
+  return { id: document.id, name: document.name, aliases: document.aliases, current: snapshot, asOfChapter: chapter }
+}
+
+/**
+ * All character states as of a chapter (0 = current), in file order.
+ * `_index.json` holds display-name mappings only and is skipped.
+ */
+export function characterStates(root: string, asOf = 0): CharacterState[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(`${stateDir(root)}/characters`)
+  } catch {
+    return []
+  }
+  return entries
+    .filter((name) => name.endsWith('.json') && name !== '_index.json')
+    .map((name) => characterStateAt(root, name.slice(0, -5), asOf))
+    .filter((state): state is CharacterState => state !== null)
+}
+
+/**
+ * Foreshadow entries open as of a chapter (0 = current: status planted;
+ * otherwise planted at or before the chapter and unresolved by it).
+ */
+export function foreshadowAt(root: string, asOf = 0): ForeshadowState[] {
+  const document = readStateFile<{ entries: ForeshadowState[] }>(root, 'foreshadow.json')
+  const chapterNumber = (id: string | undefined) => {
+    const match = /c(\d+)$/.exec(id ?? '')
+    return match ? Number(match[1]) : 0
+  }
+  return (document?.entries ?? []).filter((entry) => {
+    if (asOf <= 0) return entry.status === 'planted'
+    const planted = chapterNumber(entry.planted_at)
+    const resolved = chapterNumber(entry.resolved_at)
+    return planted > 0 && planted <= asOf && (resolved === 0 || resolved > asOf)
+  })
+}
+
+/** Timeline events at or before the given chapter, newest last (limit optional). */
+export function timelineAt(root: string, asOf = 0, limit?: number): TimelineEvent[] {
+  const document = readStateFile<{ events: TimelineEvent[] }>(root, 'timeline.json')
+  const chapterNumber = (chapter: string | undefined) => {
+    const match = /c(\d+)$/.exec(chapter ?? '')
+    return match ? Number(match[1]) : 0
+  }
+  const events = (document?.events ?? []).filter((event) => asOf <= 0 || chapterNumber(event.chapter) <= asOf)
+  return limit !== undefined ? events.slice(-limit) : events
+}
+
+/** POV register (current view). The file wraps the register in a `current` envelope. */
+export function povState(root: string): PovState | null {
+  const document = readStateFile<{ current?: PovState }>(root, 'pov.json')
+  return document?.current ?? null
+}
+
+/**
+ * World bible (name/era/premise/rules). Never mutates the repo.
+ */
+export function worldState(root: string): NovelState['world'] {
+  return readStateFile<NovelState['world']>(root, 'world.json') ?? {}
+}
+
+/** Read-only, as-of-chapter-aware view of the whole durable state. */
+export function readNovelState(root: string, asOf = 0): NovelState {
+  return {
+    world: worldState(root),
+    characters: characterStates(root, asOf),
+    foreshadow: foreshadowAt(root, asOf),
+    timeline: timelineAt(root, asOf),
+    pov: povState(root)
+  }
+}

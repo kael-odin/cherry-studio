@@ -11,7 +11,9 @@ import {
   countProse,
   isNovelRepo,
   listChapters,
+  type NovelState,
   readChapterDocument,
+  readNovelState,
   type SceneInfo
 } from './parser'
 
@@ -187,5 +189,13 @@ export class NovelService extends BaseService {
       // spec.json is optional in v0.1; absence is fine.
     }
     return { path: root, chapterCount, specVersion }
+  }
+
+  /**
+   * Read-only state view as of a chapter (0 = current). Mirrors the engine's
+   * as-of-chapter semantics; writes stay behind the engine's guarded tools.
+   */
+  stateRead(asOfChapter: number): NovelState {
+    return readNovelState(this.requireWorkspace(), asOfChapter)
   }
 }

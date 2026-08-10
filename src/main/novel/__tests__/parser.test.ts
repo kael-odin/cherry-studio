@@ -3,11 +3,18 @@ import { describe, expect, it } from 'vitest'
 import {
   bodySceneMarkers,
   chapterScenes,
+  characterStateAt,
+  characterStates,
   countProse,
+  foreshadowAt,
   isNovelRepo,
   listChapters,
+  povState,
   readChapterDocument,
-  sceneProse
+  readNovelState,
+  sceneProse,
+  timelineAt,
+  worldState
 } from '../parser'
 
 const SAMPLE = 'D:/Github_Open/novel-spec/examples/sample-novel'
@@ -78,5 +85,72 @@ describe('novel parser', () => {
     expect(() => sceneProse(body, scenes, 0)).toThrow('must contain ordered')
     const reversed = '<!-- scene:s02 -->\n\n<!-- scene:s01 -->'
     expect(() => sceneProse(reversed, scenes, 0)).toThrow('not in frontmatter order')
+  })
+})
+
+describe('novel state reads', () => {
+  it('reads the world bible', () => {
+    const world = worldState(SAMPLE)
+    expect(world.name).toContain('Lighthouse Keeper')
+    expect(world.era).toBe('Post-Blackout, year 7')
+    expect(world.rules?.length).toBeGreaterThan(0)
+  })
+
+  it('reads current character state as the latest history snapshot', () => {
+    const states = characterStates(SAMPLE)
+    expect(states.map((s) => s.id).sort()).toEqual(['keeper', 'stranger'])
+    const corra = states.find((s) => s.id === 'stranger')
+    expect(corra?.name).toBe('Corra')
+    expect(corra?.asOfChapter).toBe(3)
+    // The satchel that was restored with the sample integrity fix is present.
+    expect(corra?.current.inventory).toContain('waterlogged satchel')
+  })
+
+  it('reads character state as of an earlier chapter', () => {
+    const corra = characterStateAt(SAMPLE, 'stranger', 2)
+    expect(corra?.asOfChapter).toBe(2)
+    // Chapter 2 predates the fever break and the name reveal.
+    expect(corra?.current.status).toBe('injured')
+    expect(corra?.current.psychology).toContain('Weak but urgent')
+    expect(corra?.current.inventory).toContain("sealed paper note (Mira's handwriting)")
+  })
+
+  it('returns null for an unknown character', () => {
+    expect(characterStateAt(SAMPLE, 'missing', 0)).toBeNull()
+  })
+
+  it('lists only foreshadow entries open as of a chapter', () => {
+    const now = foreshadowAt(SAMPLE)
+    expect(now.map((f) => f.id).sort()).toEqual(['fs-storms', 'fs-whymira'])
+    const at3 = foreshadowAt(SAMPLE, 3)
+    expect(at3.map((f) => f.id).sort()).toEqual(['fs-storms', 'fs-whymira'])
+    const at1 = foreshadowAt(SAMPLE, 1)
+    // fs-note and fs-watch are planted in chapter 1 and still open there.
+    expect(at1.map((f) => f.id).sort()).toEqual(['fs-note', 'fs-watch'])
+  })
+
+  it('filters timeline events by chapter', () => {
+    const all = timelineAt(SAMPLE)
+    expect(all.length).toBeGreaterThanOrEqual(5)
+    const at2 = timelineAt(SAMPLE, 2)
+    expect(at2.every((e) => /c(?:001|002)$/.test(e.chapter))).toBe(true)
+    expect(at2.some((e) => e.chapter === 'v01-c002')).toBe(true)
+    const limited = timelineAt(SAMPLE, 0, 2)
+    expect(limited).toHaveLength(2)
+  })
+
+  it('reads the POV register', () => {
+    const pov = povState(SAMPLE)
+    expect(pov?.viewpoint).toContain('Aren')
+    expect(pov?.tense).toBe('past')
+  })
+
+  it('builds a full as-of-chapter state view', () => {
+    const state = readNovelState(SAMPLE, 2)
+    expect(state.world.era).toBe('Post-Blackout, year 7')
+    expect(state.characters.map((c) => c.id).sort()).toEqual(['keeper', 'stranger'])
+    expect(state.foreshadow.every((f) => f.status === 'planted' || /c(?:001|002)$/.test(f.planted_at ?? ''))).toBe(true)
+    expect(state.timeline.every((e) => /c(?:001|002)$/.test(e.chapter))).toBe(true)
+    expect(state.pov?.viewpoint).toBeDefined()
   })
 })
