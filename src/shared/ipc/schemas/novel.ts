@@ -172,3 +172,16 @@ export const novelRequestSchemas = {
     output: apiErrorSchema.nullable()
   })
 }
+
+/**
+ * 引擎 SSE 事件 → 渲染器（主进程 NovelService 订阅引擎 /api/v1/events 后转发）。
+ * 只转发有界字段；高频 `log` 与大体积 `draft:delta` 不转发。
+ */
+const engineEventSchema = z.object({
+  event: z.string(),
+  data: z.unknown()
+})
+
+export type NovelEventSchemas = {
+  'novel.engine_event': z.infer<typeof engineEventSchema>
+}

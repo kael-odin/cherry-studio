@@ -18,6 +18,41 @@ import {
 
 const logger = loggerService.withContext('NovelService')
 
+/**
+ * Engine SSE events forwarded to the renderer. High-frequency (`log`) and
+ * large-payload (`draft:delta` text increments) events are deliberately
+ * excluded — the panel only needs lifecycle transitions.
+ */
+const FORWARDED_EVENTS = new Set([
+  'book:creating',
+  'book:created',
+  'book:error',
+  'write:start',
+  'write:complete',
+  'write:error',
+  'draft:start',
+  'draft:complete',
+  'draft:error',
+  'audit:start',
+  'audit:complete',
+  'audit:error',
+  'revise:start',
+  'revise:complete',
+  'revise:error',
+  'rewrite:start',
+  'rewrite:complete',
+  'rewrite:error',
+  'style:start',
+  'style:complete',
+  'style:error',
+  'import:start',
+  'import:complete',
+  'import:error',
+  'fanfic:start',
+  'fanfic:complete',
+  'fanfic:error'
+])
+
 /** InkOS API error envelope. */
 export interface InkApiError {
   code: string
@@ -122,8 +157,27 @@ export class NovelService extends BaseService {
     this.engine = null
     this.lastError = null
     void syncLlmConfigFromCherry(root)
+    void this.connectEngineEvents()
     logger.info(`Novel workspace opened: ${root}`)
     return root
+  }
+
+  /**
+   * Subscribe to engine SSE events and forward lifecycle transitions to the
+   * renderer (`novel.engine_event`) — write/audit/revise progress reaches the
+   * panel in real time without polling. Safe to call repeatedly; the stream
+   * self-heals via reconnect.
+   */
+  private async connectEngineEvents(): Promise<void> {
+    try {
+      const engine = await this.engineApi()
+      engine.subscribeEvents((event, data) => {
+        if (!FORWARDED_EVENTS.has(event)) return
+        application.get('IpcApiService').broadcast('novel.engine_event', { event, data })
+      })
+    } catch (error) {
+      logger.debug(`Engine events subscription deferred: ${(error as Error).message}`)
+    }
   }
 
   closeWorkspace(): void {

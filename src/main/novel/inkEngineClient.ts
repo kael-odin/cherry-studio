@@ -23,6 +23,12 @@ export class EngineApiError extends Error {
 /** Timeout for the engine's HTTP API becoming reachable after spawn. Cold boots on Windows can take ~40s. */
 const READY_TIMEOUT_MS = 60_000
 
+/** SSE reconnect delay after a transient connection drop. */
+const EVENTS_RECONNECT_MS = 3_000
+
+/** Receiver for engine SSE events (event name + parsed JSON payload). */
+export type EngineEventHandler = (event: string, data: unknown) => void
+
 /**
  * HTTP client over the InkOS API server process (VISION §7.1: the engine is a
  * separate process; the host never touches the working tree). The engine is
@@ -40,6 +46,11 @@ export class InkEngineClient {
   private readonly root: string
   /** The engine spawn (once it started binding) + its ready-wait, if in flight. */
   private startPromise: Promise<void> | null = null
+  /** SSE event subscriber (write:start/complete/error, audit:*, revise:*, …). */
+  private eventHandler: EngineEventHandler | null = null
+  private eventsAbort: AbortController | null = null
+  private eventsRetryTimer: NodeJS.Timeout | null = null
+  private eventsRunning = false
 
   constructor(binary: string, entry: string, root: string, port: number) {
     this.binary = binary
@@ -93,6 +104,8 @@ export class InkEngineClient {
       })
       try {
         await this.bind(proc)
+        // Engine restarted (crash) while subscribed — resume the event stream.
+        if (this.eventHandler && !this.eventsRunning) void this.connectEvents()
         return
       } catch (error) {
         // The attempt failed (e.g. the port was taken) — make sure the half-started
@@ -223,8 +236,84 @@ export class InkEngineClient {
     })
   }
 
+  /**
+   * Subscribe to engine events over `/api/v1/events` (SSE). The stream is
+   * long-lived with automatic reconnect after drops — engine restarts,
+   * workspace switches and transient network errors all self-heal.
+   */
+  subscribeEvents(handler: EngineEventHandler): void {
+    this.eventHandler = handler
+    if (this.proc && !this.eventsRunning) void this.connectEvents()
+  }
+
+  /** Replace the event handler without tearing down the SSE connection. */
+  onEvent(handler: EngineEventHandler | null): void {
+    this.eventHandler = handler
+  }
+
+  private async connectEvents(): Promise<void> {
+    if (this.eventsRunning || !this.proc) return
+    this.eventsRunning = true
+    this.eventsAbort = new AbortController()
+    try {
+      const response = await fetch(`${this.baseUrl}/api/v1/events`, { signal: this.eventsAbort.signal })
+      if (!response.ok || !response.body) {
+        throw new Error(`events endpoint answered ${response.status}`)
+      }
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let pendingEvent: string | null = null
+      const reader = response.body.getReader()
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            pendingEvent = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            if (!pendingEvent) continue
+            let data: unknown
+            try {
+              data = JSON.parse(line.slice(5).trim())
+            } catch {
+              data = line.slice(5).trim()
+            }
+            this.eventHandler?.(pendingEvent, data)
+            pendingEvent = null
+          }
+        }
+      }
+    } catch (error) {
+      if (!this.eventsAbort?.signal.aborted) {
+        logger.debug(`InkOS events stream dropped: ${(error as Error).message}`)
+      }
+    } finally {
+      this.eventsRunning = false
+      this.eventsAbort = null
+      // Reconnect unless the client was stopped or disposed.
+      if (this.proc && this.eventHandler && this.eventsRetryTimer === null) {
+        this.eventsRetryTimer = setTimeout(() => {
+          this.eventsRetryTimer = null
+          void this.connectEvents()
+        }, EVENTS_RECONNECT_MS)
+      }
+    }
+  }
+
   /** Terminate the engine process (SIGTERM, then SIGKILL on Windows). */
   stop(): void {
+    if (this.eventsRetryTimer) {
+      clearTimeout(this.eventsRetryTimer)
+      this.eventsRetryTimer = null
+    }
+    if (this.eventsAbort) {
+      this.eventsAbort.abort()
+      this.eventsAbort = null
+    }
+    this.eventHandler = null
     if (!this.proc) return
     const proc = this.proc
     this.proc = null
