@@ -23,6 +23,7 @@ import { ApiGatewayService } from '@main/features/apiGateway/ApiGatewayService'
 import { FileProcessingService, TesseractRuntimeService } from '@main/features/fileProcessing'
 import { KnowledgeService, KnowledgeVectorStoreService } from '@main/features/knowledge'
 import { IpcApiService } from '@main/ipc/IpcApiService'
+import { NovelService } from '@main/novel/NovelService'
 import { AnalyticsService } from '@main/services/AnalyticsService'
 import { AppMenuService } from '@main/services/AppMenuService'
 import { AppUpdaterService } from '@main/services/AppUpdaterService'
@@ -115,6 +116,7 @@ export const services = {
   McpRuntimeService,
   McpCatalogService,
   BinaryManager,
+  NovelService,
   OpenClawService,
   ClaudeCodeProcessManager,
   AgentSessionRuntimeService,

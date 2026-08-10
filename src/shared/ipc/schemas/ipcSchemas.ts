@@ -19,6 +19,7 @@ import { type McpEventSchemas, mcpRequestSchemas } from './mcp'
 import { miniAppRequestSchemas } from './miniApp'
 import { type NavigationEventSchemas, navigationRequestSchemas } from './navigation'
 import { type NotificationEventSchemas, notificationRequestSchemas } from './notification'
+import { novelRequestSchemas } from './novel'
 import { type OAuthEventSchemas, oauthRequestSchemas } from './oauth'
 import { openclawRequestSchemas } from './openclaw'
 import { ovmsRequestSchemas } from './ovms'
@@ -63,6 +64,7 @@ export const ipcRequestSchemas = {
   ...miniAppRequestSchemas,
   ...navigationRequestSchemas,
   ...notificationRequestSchemas,
+  ...novelRequestSchemas,
   ...oauthRequestSchemas,
   ...openclawRequestSchemas,
   ...ovmsRequestSchemas,
