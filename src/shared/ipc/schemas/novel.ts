@@ -135,6 +135,31 @@ const novelStateSchema = z.object({
   pov: povStateSchema.nullable()
 })
 
+const reviewFindingSchema = z.object({
+  id: z.string(),
+  reviewer: z.string(),
+  severity: z.string(),
+  summary: z.string(),
+  resolution: z.string(),
+  rationale: z.string().optional()
+})
+
+const reviewPassSchema = z.object({
+  reviewer: z.string(),
+  status: z.enum(['completed', 'failed']),
+  error: z.string().optional(),
+  findings: z.array(reviewFindingSchema)
+})
+
+const reviewOutcomeSchema = z.object({
+  chapterId: z.string(),
+  passes: z.array(reviewPassSchema),
+  gatePassed: z.boolean(),
+  gateError: z.string().optional(),
+  recordFile: z.string().optional(),
+  consistency: z.string()
+})
+
 // Chapter ids follow `vNN-cNNN` (mirrors the reference runtime's chapterNumber).
 const chapterIdSchema = z.string().regex(/^v\d+-c\d+$/, 'chapter_id must match vNN-cNNN')
 
@@ -171,5 +196,21 @@ export const novelRequestSchemas = {
     // as_of_chapter: latest snapshot at or before this chapter (0/omitted = current).
     input: z.object({ asOfChapter: z.number().int().nonnegative().optional() }),
     output: novelStateSchema
+  }),
+  'novel.run_review': defineRoute({
+    // Runs the three reviewer passes (consistency/foreshadow/style) with the
+    // given model and appends the record to the engine's reviews ledger when
+    // the finalize gate passes.
+    input: z.object({ chapterId: chapterIdSchema, modelId: z.string().min(1) }),
+    output: reviewOutcomeSchema
+  }),
+  'novel.finalize': defineRoute({
+    // Engine-enforced finalize: scene statuses, prose length, latest review
+    // record, clean consistency report — all guarded inside the engine.
+    input: z.object({
+      chapterId: chapterIdSchema,
+      status: z.enum(['reviewed', 'final'])
+    }),
+    output: z.record(z.string(), z.unknown())
   })
 }

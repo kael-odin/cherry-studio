@@ -4,6 +4,7 @@ import path from 'node:path'
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
 
+import { NovelEngineClient } from './engineClient'
 import {
   bodySceneMarkers,
   type ChapterFrontmatter,
@@ -16,6 +17,7 @@ import {
   readNovelState,
   type SceneInfo
 } from './parser'
+import { type ReviewOutcome, runChapterReview, toUsableModelId } from './review'
 
 const logger = loggerService.withContext('NovelService')
 
@@ -63,12 +65,15 @@ export interface ReviewRecordSummary {
 @ServicePhase(Phase.WhenReady)
 export class NovelService extends BaseService {
   private workspacePath: string | null = null
+  private engine: NovelEngineClient | null = null
 
   protected onInit(): void {
     logger.info('NovelService initialized')
   }
 
   protected onDispose(): void {
+    this.engine?.stop()
+    this.engine = null
     this.workspacePath = null
     logger.info('NovelService disposed')
   }
@@ -84,6 +89,8 @@ export class NovelService extends BaseService {
       throw new Error(`not a novel-spec repository: ${root}`)
     }
     this.workspacePath = root
+    this.engine?.stop()
+    this.engine = new NovelEngineClient(engineBinary(), root)
     logger.info(`Novel workspace opened: ${root}`)
     return root
   }
@@ -93,6 +100,8 @@ export class NovelService extends BaseService {
       logger.info(`Novel workspace closed: ${this.workspacePath}`)
       this.workspacePath = null
     }
+    this.engine?.stop()
+    this.engine = null
   }
 
   private requireWorkspace(): string {
@@ -198,4 +207,47 @@ export class NovelService extends BaseService {
   stateRead(asOfChapter: number): NovelState {
     return readNovelState(this.requireWorkspace(), asOfChapter)
   }
+
+  /**
+   * Run the three reviewer passes for a chapter and append the record to the
+   * engine's reviews ledger when the gate passes. Writes happen in the engine
+   * process only — this host never touches the working tree.
+   */
+  async runReview(chapterId: string, modelId: string): Promise<ReviewOutcome> {
+    const root = this.requireWorkspace()
+    const usableModelId = toUsableModelId(modelId) ?? null
+    if (!usableModelId) {
+      throw new Error(`unusable review model id: ${modelId}`)
+    }
+    const engine = await this.requireEngine()
+    return runChapterReview(engine, root, chapterId, usableModelId)
+  }
+
+  /**
+   * Finalize a chapter via the engine — the engine enforces scene statuses,
+   * prose-length range, the latest review record, and a clean consistency
+   * report before mutating frontmatter.
+   */
+  async finalizeChapter(chapterId: string, status: 'reviewed' | 'final'): Promise<Record<string, unknown>> {
+    const engine = await this.requireEngine()
+    const result = await engine.callTool('finalize_chapter', { chapter_id: chapterId, status })
+    if (result.isError) {
+      throw new Error(result.text)
+    }
+    return JSON.parse(result.text) as Record<string, unknown>
+  }
+
+  private async requireEngine(): Promise<NovelEngineClient> {
+    this.requireWorkspace()
+    if (!this.engine) {
+      this.engine = new NovelEngineClient(engineBinary(), this.workspacePath as string)
+    }
+    await this.engine.start()
+    return this.engine
+  }
+}
+
+/** Engine binary path: REASONIX_NOVEL_BIN env override, else `reasonix-novel` on PATH. */
+function engineBinary(): string {
+  return process.env.REASONIX_NOVEL_BIN ?? 'reasonix-novel'
 }

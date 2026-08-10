@@ -1,9 +1,10 @@
 import { Badge, Button, Skeleton } from '@cherrystudio/ui'
+import { usePreference } from '@data/hooks/usePreference'
 import { loggerService } from '@logger'
 import { ipcApi } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
 import type { OutputFor } from '@shared/ipc/types'
-import { BookOpen, Flag, FolderOpen, X } from 'lucide-react'
+import { BookOpen, Flag, FolderOpen, Play, ShieldCheck, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -14,6 +15,7 @@ type SceneContext = OutputFor<'novel.scene_context'>
 type WorkspaceStatus = OutputFor<'novel.get_status'>
 type ChapterSummary = OutputFor<'novel.list_chapters'>[number]
 type NovelState = OutputFor<'novel.state_read'>
+type ReviewOutcome = OutputFor<'novel.run_review'>
 
 /** Read-only novel-spec workspace viewer. P1 panel: open a repo, list
  * chapters/scenes/reviews, preview a chapter and its durable state. State
@@ -28,10 +30,17 @@ function NovelPage() {
   const [reviews, setReviews] = useState<OutputFor<'novel.list_reviews'>>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const [tab, setTab] = useState<'chapter' | 'state'>('chapter')
+  const [tab, setTab] = useState<'chapter' | 'state' | 'review'>('chapter')
   const [asOfChapter, setAsOfChapter] = useState(0)
   const [novelState, setNovelState] = useState<NovelState | null>(null)
   const [stateLoading, setStateLoading] = useState(false)
+  const [reviewOutcome, setReviewOutcome] = useState<ReviewOutcome | null>(null)
+  const [reviewRunning, setReviewRunning] = useState(false)
+  const [finalizing, setFinalizing] = useState(false)
+  const [finalizeResult, setFinalizeResult] = useState<string | null>(null)
+  const [quickAssistantModelId] = usePreference('feature.quick_assistant.model_id')
+  const [chatDefaultModelId] = usePreference('chat.default_model_id')
+  const reviewModelId = quickAssistantModelId ?? chatDefaultModelId
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -61,6 +70,8 @@ function NovelPage() {
         setSceneContext(null)
         setReviews([])
         setNovelState(null)
+        setReviewOutcome(null)
+        setFinalizeResult(null)
         setAsOfChapter(0)
         setTab('chapter')
       } finally {
@@ -83,6 +94,8 @@ function NovelPage() {
       setSceneContext(null)
       setReviews([])
       setNovelState(null)
+      setReviewOutcome(null)
+      setFinalizeResult(null)
       setAsOfChapter(0)
       setTab('chapter')
       setError(null)
@@ -148,6 +161,180 @@ function NovelPage() {
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [status])
+
+  const runReview = useCallback(async () => {
+    if (!selectedId || !reviewModelId) return
+    setReviewRunning(true)
+    setFinalizeResult(null)
+    setError(null)
+    try {
+      const outcome = await ipcApi.request('novel.run_review', {
+        chapterId: selectedId,
+        modelId: reviewModelId
+      })
+      setReviewOutcome(outcome)
+      setReviews(await ipcApi.request('novel.list_reviews', { chapterId: selectedId }))
+    } catch (err) {
+      logger.error('Failed to run novel review', err as Error)
+      toast.error(t('novel.review_run'))
+      setError(String(err))
+    } finally {
+      setReviewRunning(false)
+    }
+  }, [selectedId, reviewModelId, t])
+
+  const finalize = useCallback(
+    async (status: 'reviewed' | 'final') => {
+      if (!selectedId) return
+      setFinalizing(true)
+      setError(null)
+      try {
+        const result = await ipcApi.request('novel.finalize', { chapterId: selectedId, status })
+        setFinalizeResult(t('novel.review_finalized', { status: String(result.status) }))
+        await refreshStatus()
+        setChapters(await ipcApi.request('novel.list_chapters'))
+      } catch (err) {
+        logger.error('Failed to finalize novel chapter', err as Error)
+        toast.error(t('novel.review_finalize'))
+        setError(String(err))
+      } finally {
+        setFinalizing(false)
+      }
+    },
+    [selectedId, refreshStatus, t]
+  )
+
+  const renderReviewView = () => {
+    if (!selectedId) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+          <ShieldCheck className="size-8 text-muted-foreground" />
+          <p className="text-muted-foreground text-sm">{t('novel.review_none_selected')}</p>
+        </div>
+      )
+    }
+    const passLabels: Record<string, string> = {
+      'novel-consistency-reviewer': 'Consistency',
+      'novel-foreshadow-reviewer': 'Foreshadow',
+      'novel-style-reviewer': 'Style'
+    }
+    return (
+      <div className="mx-auto max-w-3xl px-6 py-5">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <h1 className="font-semibold text-lg">{t('novel.review_heading')}</h1>
+          <span className="font-mono text-muted-foreground text-xs">{selectedId}</span>
+          <div className="ml-auto flex items-center gap-2">
+            {reviewModelId && (
+              <span className="max-w-48 truncate font-mono text-muted-foreground text-xs" title={reviewModelId}>
+                {t('novel.review_model')}: {reviewModelId}
+              </span>
+            )}
+            <Button size="sm" onClick={() => void runReview()} disabled={reviewRunning || !reviewModelId}>
+              <Play className="size-3.5" />
+              {reviewRunning ? t('novel.review_running') : t('novel.review_run')}
+            </Button>
+          </div>
+        </div>
+
+        {reviewRunning && (
+          <div className="space-y-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        )}
+
+        {!reviewRunning && reviewOutcome && (
+          <div className="space-y-5">
+            <section>
+              <h2 className="mb-1.5 font-semibold text-sm">{t('novel.review_passes')}</h2>
+              <div className="space-y-1.5">
+                {reviewOutcome.passes.map((pass) => (
+                  <div key={pass.reviewer} className="flex items-center gap-2 rounded-md border p-2.5 text-sm">
+                    <span className="font-medium">{passLabels[pass.reviewer] ?? pass.reviewer}</span>
+                    {pass.status === 'completed' ? (
+                      <Badge variant="secondary">{t('novel.review_completed')}</Badge>
+                    ) : (
+                      <Badge variant="destructive">{t('novel.review_failed')}</Badge>
+                    )}
+                    <span className="text-muted-foreground text-xs">
+                      {pass.findings.length} {t('novel.findings')}
+                    </span>
+                    {pass.error && <span className="ml-auto truncate text-error-foreground text-xs">{pass.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            {reviewOutcome.gatePassed && reviewOutcome.recordFile && (
+              <p className="text-primary text-xs">
+                {t('novel.review_gate_passed')} — {reviewOutcome.recordFile}
+              </p>
+            )}
+            {!reviewOutcome.gatePassed && reviewOutcome.gateError && (
+              <p className="text-error-foreground text-xs">
+                {t('novel.review_gate_failed')}: {reviewOutcome.gateError}
+              </p>
+            )}
+
+            {reviewOutcome.passes.some((pass) => pass.findings.length > 0) && (
+              <section>
+                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.review_findings')}</h2>
+                <div className="space-y-1.5">
+                  {reviewOutcome.passes
+                    .flatMap((pass) => pass.findings)
+                    .map((finding) => (
+                      <div key={finding.id} className="rounded-md border p-2.5 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-muted-foreground">{finding.id}</span>
+                          <Badge variant="outline">{finding.severity}</Badge>
+                          <Badge variant="secondary">{finding.resolution}</Badge>
+                          <span className="text-muted-foreground">{finding.reviewer}</span>
+                        </div>
+                        <p className="mt-1">{finding.summary}</p>
+                        {finding.rationale && (
+                          <p className="mt-1 text-muted-foreground/70 italic">{finding.rationale}</p>
+                        )}
+                      </div>
+                    ))}
+                </div>
+              </section>
+            )}
+
+            {reviewOutcome.consistency && (
+              <p className="text-muted-foreground text-xs">
+                {t('novel.review_consistency')}: {reviewOutcome.consistency.slice(0, 120)}
+              </p>
+            )}
+          </div>
+        )}
+
+        {!reviewRunning && !reviewOutcome && (
+          <p className="text-muted-foreground text-sm">{t('novel.review_none_selected')}</p>
+        )}
+
+        <div className="mt-6 flex items-center gap-3 border-t pt-4">
+          {finalizeResult && <span className="text-primary text-xs">{finalizeResult}</span>}
+          <div className="ml-auto flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void finalize('reviewed')}
+              disabled={finalizing || reviewRunning}>
+              {finalizing ? t('novel.review_finalizing') : t('novel.review_finalize')}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => void finalize('final')}
+              disabled={finalizing || reviewRunning}>
+              {finalizing ? t('novel.review_finalizing') : 'final'}
+            </Button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   const selectedSummary = useMemo(() => chapters.find((c) => c.id === selectedId) ?? null, [chapters, selectedId])
   const frontmatter = chapterRead?.frontmatter
@@ -424,11 +611,19 @@ function NovelPage() {
                 className={`rounded px-2 py-1 transition-colors ${tab === 'state' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
                 {t('novel.tab_state')}
               </button>
+              <button
+                type="button"
+                onClick={() => setTab('review')}
+                className={`rounded px-2 py-1 transition-colors ${tab === 'review' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
+                {t('novel.tab_review')}
+              </button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto">
               {tab === 'state' ? (
                 renderStateView()
+              ) : tab === 'review' ? (
+                renderReviewView()
               ) : !selectedSummary || !chapterRead ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
                   <Flag className="size-8 text-muted-foreground" />
