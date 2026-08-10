@@ -35,6 +35,7 @@ import { Route as SettingsAppearanceRouteImport } from './routes/settings/appear
 import { Route as SettingsApiGatewayRouteImport } from './routes/settings/api-gateway'
 import { Route as SettingsAboutRouteImport } from './routes/settings/about'
 import { Route as AppTranslateRouteImport } from './routes/app/translate'
+import { Route as AppNovelRouteImport } from './routes/app/novel'
 import { Route as AppNotesRouteImport } from './routes/app/notes'
 import { Route as AppLaunchpadRouteImport } from './routes/app/launchpad'
 import { Route as AppKnowledgeRouteImport } from './routes/app/knowledge'
@@ -189,6 +190,11 @@ const AppTranslateRoute = AppTranslateRouteImport.update({
   path: '/translate',
   getParentRoute: () => AppRoute,
 } as any)
+const AppNovelRoute = AppNovelRouteImport.update({
+  id: '/novel',
+  path: '/novel',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppNotesRoute = AppNotesRouteImport.update({
   id: '/notes',
   path: '/notes',
@@ -314,6 +320,7 @@ export interface FileRoutesByFullPath {
   '/app/knowledge': typeof AppKnowledgeRoute
   '/app/launchpad': typeof AppLaunchpadRoute
   '/app/notes': typeof AppNotesRoute
+  '/app/novel': typeof AppNovelRoute
   '/app/translate': typeof AppTranslateRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/api-gateway': typeof SettingsApiGatewayRoute
@@ -363,6 +370,7 @@ export interface FileRoutesByTo {
   '/app/knowledge': typeof AppKnowledgeRoute
   '/app/launchpad': typeof AppLaunchpadRoute
   '/app/notes': typeof AppNotesRoute
+  '/app/novel': typeof AppNovelRoute
   '/app/translate': typeof AppTranslateRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/api-gateway': typeof SettingsApiGatewayRoute
@@ -412,6 +420,7 @@ export interface FileRoutesById {
   '/app/knowledge': typeof AppKnowledgeRoute
   '/app/launchpad': typeof AppLaunchpadRoute
   '/app/notes': typeof AppNotesRoute
+  '/app/novel': typeof AppNovelRoute
   '/app/translate': typeof AppTranslateRoute
   '/settings/about': typeof SettingsAboutRoute
   '/settings/api-gateway': typeof SettingsApiGatewayRoute
@@ -464,6 +473,7 @@ export interface FileRouteTypes {
     | '/app/knowledge'
     | '/app/launchpad'
     | '/app/notes'
+    | '/app/novel'
     | '/app/translate'
     | '/settings/about'
     | '/settings/api-gateway'
@@ -513,6 +523,7 @@ export interface FileRouteTypes {
     | '/app/knowledge'
     | '/app/launchpad'
     | '/app/notes'
+    | '/app/novel'
     | '/app/translate'
     | '/settings/about'
     | '/settings/api-gateway'
@@ -561,6 +572,7 @@ export interface FileRouteTypes {
     | '/app/knowledge'
     | '/app/launchpad'
     | '/app/notes'
+    | '/app/novel'
     | '/app/translate'
     | '/settings/about'
     | '/settings/api-gateway'
@@ -790,6 +802,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppTranslateRouteImport
       parentRoute: typeof AppRoute
     }
+    '/app/novel': {
+      id: '/app/novel'
+      path: '/novel'
+      fullPath: '/app/novel'
+      preLoaderRoute: typeof AppNovelRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/app/notes': {
       id: '/app/notes'
       path: '/notes'
@@ -956,6 +975,7 @@ interface AppRouteChildren {
   AppKnowledgeRoute: typeof AppKnowledgeRoute
   AppLaunchpadRoute: typeof AppLaunchpadRoute
   AppNotesRoute: typeof AppNotesRoute
+  AppNovelRoute: typeof AppNovelRoute
   AppTranslateRoute: typeof AppTranslateRoute
   AppMiniAppAppIdRoute: typeof AppMiniAppAppIdRoute
   AppPaintingsSplatRoute: typeof AppPaintingsSplatRoute
@@ -972,6 +992,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppKnowledgeRoute: AppKnowledgeRoute,
   AppLaunchpadRoute: AppLaunchpadRoute,
   AppNotesRoute: AppNotesRoute,
+  AppNovelRoute: AppNovelRoute,
   AppTranslateRoute: AppTranslateRoute,
   AppMiniAppAppIdRoute: AppMiniAppAppIdRoute,
   AppPaintingsSplatRoute: AppPaintingsSplatRoute,

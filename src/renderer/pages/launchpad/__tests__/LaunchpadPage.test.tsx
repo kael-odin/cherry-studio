@@ -116,6 +116,7 @@ vi.mock('@renderer/i18n/label', () => ({
       files: 'Files',
       code_tools: 'Code',
       notes: 'Notes',
+      novel: 'Novel',
       openclaw: 'OpenClaw'
     })[key]
 }))
@@ -142,6 +143,7 @@ vi.mock('react-i18next', () => ({
           'miniApp.reorder_failed': 'Failed to reorder mini apps',
           'miniApp.title': 'Mini Apps',
           'notes.title': 'Notes',
+          'novel.title': 'Novel',
           'openclaw.title': 'OpenClaw',
           'paintings.title': 'Paintings',
           'title.launchpad': 'Launchpad',

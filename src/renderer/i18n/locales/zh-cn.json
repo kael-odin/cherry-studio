@@ -4687,6 +4687,25 @@
     },
     "tip": "如果响应成功，则只针对超过30秒的消息进行提醒"
   },
+  "novel": {
+    "close_failed": "关闭小说工作区失败",
+    "close_workspace": "关闭",
+    "empty_description": "打开一个 novel-spec 仓库，浏览其中的章节、场景与审稿记录。仓库（一部小说 = 一个 Git 仓库）是唯一事实来源。",
+    "findings": "条意见",
+    "han_chars": "汉字",
+    "no_workspace": "未打开小说工作区",
+    "open_failed": "打开小说工作区失败",
+    "open_workspace": "打开小说工作区",
+    "progress": "进度",
+    "reviewers": "位审稿人",
+    "reviews": "审稿记录",
+    "scene_prose": "场景正文",
+    "scenes": "个场景",
+    "select_chapter": "选择一个章节预览",
+    "target": "目标",
+    "title": "小说",
+    "words": "词"
+  },
   "ocr": {
     "processing": "OCR 处理中..."
   },

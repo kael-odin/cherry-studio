@@ -4096,6 +4096,9 @@
       "failed": "Η αποκατάσταση απέτυχε",
       "success": "Η αποκατάσταση ήταν επιτυχής"
     },
+    "retry": {
+      "status": "[to be translated]:Retrying with {{model}} · attempt {{attempt}}"
+    },
     "save": {
       "success": {
         "title": "Η αποθήκευση ήταν επιτυχής"
@@ -4683,6 +4686,25 @@
       "success": "Επιτυχής προσθήκη {{type}} στη βάση γνώσης"
     },
     "tip": "Εάν η απάντηση είναι επιτυχής, η ειδοποίηση εμφανίζεται μόνο για μηνύματα που υπερβαίνουν τα 30 δευτερόλεπτα"
+  },
+  "novel": {
+    "close_failed": "[to be translated]:Failed to close novel workspace",
+    "close_workspace": "[to be translated]:Close",
+    "empty_description": "[to be translated]:Open a novel-spec repository to browse its chapters, scenes and reviews. The repository (one novel = one git repo) is the single source of truth.",
+    "findings": "[to be translated]:findings",
+    "han_chars": "[to be translated]:Han chars",
+    "no_workspace": "[to be translated]:No novel workspace open",
+    "open_failed": "[to be translated]:Failed to open novel workspace",
+    "open_workspace": "[to be translated]:Open Novel Workspace",
+    "progress": "[to be translated]:Progress",
+    "reviewers": "[to be translated]:reviewers",
+    "reviews": "[to be translated]:Review records",
+    "scene_prose": "[to be translated]:Scene prose",
+    "scenes": "[to be translated]:scenes",
+    "select_chapter": "[to be translated]:Select a chapter to preview",
+    "target": "[to be translated]:Target",
+    "title": "[to be translated]:Novel",
+    "words": "[to be translated]:words"
   },
   "ocr": {
     "processing": "Η επεξεργασία OCR βρίσκεται σε εξέλιξη..."
@@ -7524,6 +7546,16 @@
         "label": "Γρήγορο μοντέλο",
         "setting_title": "Γρήγορη ρύθμιση μοντέλου",
         "tooltip": "Προτείνεται να επιλέξετε ένα ελαφρύ μοντέλο και δεν συνιστάται να επιλέξετε ένα μοντέλο σκέψης"
+      },
+      "retry": {
+        "backoff": "[to be translated]:Exponential backoff",
+        "description": "[to be translated]:Retry chat, embedding, and rerank calls; chat can fall back to other models",
+        "fallback_models": "[to be translated]:Fallback models",
+        "fallback_models_count": "[to be translated]:{{count}} models selected",
+        "fallback_models_description": "[to be translated]:Models tried in order when the primary model fails",
+        "label": "[to be translated]:Model Call Retry",
+        "max_attempts": "[to be translated]:Max retry attempts",
+        "tooltip": "[to be translated]:Retries and fallbacks only apply before the model starts streaming content"
       },
       "toolbar": {
         "custom_add": "Προσαρμοσμένο",

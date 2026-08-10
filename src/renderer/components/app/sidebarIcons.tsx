@@ -1,6 +1,7 @@
 import type { SidebarAppId } from '@renderer/utils/sidebar'
 import type { LucideIcon } from 'lucide-react'
 import {
+  BookOpenText,
   Code,
   FileSearch,
   Folder,
@@ -27,5 +28,6 @@ export const SIDEBAR_ICON_COMPONENTS: Record<SidebarAppId, LucideIcon> = {
   knowledge: FileSearch,
   files: Folder,
   code_tools: Code,
-  notes: NotepadText
+  notes: NotepadText,
+  novel: BookOpenText
 }

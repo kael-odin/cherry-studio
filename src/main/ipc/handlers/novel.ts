@@ -11,12 +11,12 @@ export const novelHandlers: IpcHandlersFor<typeof novelRequestSchemas> = {
     }
     return service.workspaceStatus()
   },
-  'novel.open_workspace': (input) => application.get('NovelService').openWorkspace(input.root),
-  'novel.close_workspace': () => {
+  'novel.open_workspace': async (input) => application.get('NovelService').openWorkspace(input.root),
+  'novel.close_workspace': async () => {
     application.get('NovelService').closeWorkspace()
   },
-  'novel.list_chapters': () => application.get('NovelService').listChapters(),
-  'novel.read_chapter': (input) => application.get('NovelService').readChapter(input.chapterId),
-  'novel.scene_context': (input) => application.get('NovelService').sceneContext(input.chapterId),
-  'novel.list_reviews': (input) => application.get('NovelService').listReviews(input.chapterId)
+  'novel.list_chapters': async () => application.get('NovelService').listChapters(),
+  'novel.read_chapter': async (input) => application.get('NovelService').readChapter(input.chapterId),
+  'novel.scene_context': async (input) => application.get('NovelService').sceneContext(input.chapterId),
+  'novel.list_reviews': async (input) => application.get('NovelService').listReviews(input.chapterId)
 }

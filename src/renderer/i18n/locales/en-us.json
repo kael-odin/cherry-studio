@@ -4687,6 +4687,25 @@
     },
     "tip": "If the response is successful, then only messages exceeding 30 seconds will trigger a reminder"
   },
+  "novel": {
+    "close_failed": "Failed to close novel workspace",
+    "close_workspace": "Close",
+    "empty_description": "Open a novel-spec repository to browse its chapters, scenes and reviews. The repository (one novel = one git repo) is the single source of truth.",
+    "findings": "findings",
+    "han_chars": "Han chars",
+    "no_workspace": "No novel workspace open",
+    "open_failed": "Failed to open novel workspace",
+    "open_workspace": "Open Novel Workspace",
+    "progress": "Progress",
+    "reviewers": "reviewers",
+    "reviews": "Review records",
+    "scene_prose": "Scene prose",
+    "scenes": "scenes",
+    "select_chapter": "Select a chapter to preview",
+    "target": "Target",
+    "title": "Novel",
+    "words": "words"
+  },
   "ocr": {
     "processing": "OCR processing..."
   },
