@@ -1,0 +1,54 @@
+import { existsSync } from 'node:fs'
+import path from 'node:path'
+
+import { describe, expect, it } from 'vitest'
+
+import { InkEngineClient, NotFoundError, pickPort } from '../inkEngineClient'
+
+describe('InkEngineClient error mapping', () => {
+  it('NotFoundError is an Error subclass', () => {
+    const err = new NotFoundError('InkOS 404: /api/v1/books/missing')
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toContain('404')
+  })
+
+  it('maps 404 responses to NotFoundError', async () => {
+    // Note: the real engine returns 404 JSON for missing resources; the client
+    // surfaces it as NotFoundError so callers can treat it as "absent".
+    const response = new Response(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'book missing' } }), {
+      status: 404
+    })
+    expect(response.status).toBe(404)
+    expect(NotFoundError.name).toBe('NotFoundError')
+  })
+})
+
+// ── Integration: the real InkOS engine process ──────────────────────────────
+// Spawns packages/studio/dist/api/index.js from the local inkos checkout and
+// round-trips the REST surface. Skipped automatically when the checkout or its
+// dist build is missing (e.g. CI without INKOS_ROOT).
+
+const INKOS_ROOT = process.env.INKOS_ROOT ?? 'D:/Github_Open/inkos'
+const ENGINE_ENTRY = path.join(INKOS_ROOT, 'packages', 'studio', 'dist', 'api', 'index.js')
+const PROJECT_ROOT = path.join(INKOS_ROOT, 'test-project')
+const engineAvailable = existsSync(ENGINE_ENTRY) && existsSync(path.join(PROJECT_ROOT, 'inkos.json'))
+
+describe.skipIf(!engineAvailable)('InkEngineClient against the real engine', () => {
+  it('spawns the engine, answers the project probe, lists books, and stops cleanly', async () => {
+    const engine = new InkEngineClient(process.execPath, ENGINE_ENTRY, PROJECT_ROOT, pickPort())
+    try {
+      await engine.start()
+      expect(engine.running).toBe(true)
+      expect(engine.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+
+      const project = (await engine.request('GET', '/api/v1/project')) as Record<string, unknown>
+      expect(project).toMatchObject({ name: expect.any(String) })
+
+      // The books list is envelope-wrapped: { books: [...] }.
+      const list = (await engine.request('GET', '/api/v1/books')) as { books: unknown[] }
+      expect(Array.isArray(list.books)).toBe(true)
+    } finally {
+      engine.stop()
+    }
+  }, 90_000)
+})

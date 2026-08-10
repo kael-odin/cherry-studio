@@ -1,105 +1,93 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
 
-import { NovelEngineClient } from './engineClient'
-import {
-  bodySceneMarkers,
-  type ChapterFrontmatter,
-  chapterScenes,
-  countProse,
-  isNovelRepo,
-  listChapters,
-  type NovelState,
-  readChapterDocument,
-  readNovelState,
-  type SceneInfo
-} from './parser'
-import { type ReviewOutcome, runChapterReview, toUsableModelId } from './review'
+import { InkEngineClient, NotFoundError, pickPort } from './inkEngineClient'
 
 const logger = loggerService.withContext('NovelService')
 
-export interface ChapterSummary {
+/** InkOS API error envelope. */
+export interface InkApiError {
+  code: string
+  message: string
+}
+
+// ── InkOS contracts (mirrors packages/studio/src/shared/contracts.ts) ──────
+
+export interface InkBookSummary {
   id: string
-  title?: string
-  volume?: number
-  chapter?: number
-  status?: string
-  countUnit?: 'han_chars' | 'words'
-  targetChars?: number
-  proseCount?: number
-  sceneCount: number
-  sceneMarkers: string[]
+  title: string
+  status: string
+  platform: string
+  genre: string
+  targetChapters: number
+  chapters: number
+  chapterCount: number
+  lastChapterNumber: number
+  totalWords: number
+  approvedChapters: number
+  pendingReview: number
+  pendingReviewChapters: number
+  failedReview: number
+  failedChapters: number
+  recentRunStatus?: string | null
+  updatedAt: string
+  /** `nextChapterNumber - 1` — present on the wire list summary. */
+  chaptersWritten?: number
 }
 
-export interface ChapterRead {
-  frontmatter: ChapterFrontmatter
-  body: string
-  proseCount: number
+export interface InkChapterSummary {
+  number: number
+  title: string
+  status: string
+  wordCount: number
+  auditIssueCount: number
+  updatedAt: string
+  fileName: string | null
+  auditIssues: string[]
+  reviewNote?: string
+  createdAt: string
 }
 
-export interface SceneContext {
-  chapterId: string
-  scenes: SceneInfo[]
-  bodySceneMarkers: string[]
-  proseCount: number
+export interface InkChapterDetail {
+  chapterNumber: number
+  filename: string | null
+  content: string
 }
 
-export interface ReviewRecordSummary {
-  file: string
-  chapterId?: string
-  status?: string
-  reviewerCount: number
-  findingCount: number
+export interface InkProjectStatus {
+  name: string
+  language: string
+  languageExplicit: boolean
+  model: string
+  provider: string
 }
 
-/** Git status of the workspace as reported by the engine (snake_case → camelCase). */
-export interface RepoStatus {
-  branch: string
-  shortSha: string
-  commitMessage?: string
-  dirty: boolean
-  staged?: string[]
-  modified?: string[]
-  deleted?: string[]
-  untracked?: string[]
-  ahead?: number
-  behind?: number
-  noCommitsYet?: boolean
-  isGitRepo: boolean
-  reason?: string
+/** Book creation is async in the engine (architect run) — poll this for the result. */
+export interface InkCreateStatus {
+  status: 'creating' | 'ready' | 'error' | 'missing'
+  error?: string
 }
 
-export interface GitCommitResult {
-  shortSha: string
-  commit: string
-  files?: number
-  insertions?: number
-  deletions?: number
-}
-
-export interface GitRollbackResult {
-  target: string
-  shortSha: string
-  commit: string
-  files?: number
-  resetHard?: boolean
-  commitSummary?: string
+/** Result of a chapter audit run. */
+export interface InkAuditResult {
+  passed?: boolean
+  issues?: Array<{ severity?: string; message?: string }>
 }
 
 /**
- * Novel-spec workspace service: opens a novel-spec git repository and serves
- * chapter/scene/state reads to the renderer. P1 is read-only — state writes
- * stay behind the engine's guarded tools (see VISION.md). The workspace root
- * is a renderer-provided absolute path (picked via the native dialog).
+ * InkOS 工作台服务：把 InkOS 引擎（packages/studio API server，独立进程）
+ * 暴露给渲染器。所有书/章节/写作/审稿操作都转发到引擎的 /api/v1 端点；
+ * 主机进程不直接碰工作目录（VISION §7.1 引擎独立进程原则）。
  */
 @Injectable('NovelService')
 @ServicePhase(Phase.WhenReady)
 export class NovelService extends BaseService {
   private workspacePath: string | null = null
-  private engine: NovelEngineClient | null = null
+  private engine: InkEngineClient | null = null
+  private lastError: InkApiError | null = null
 
   protected onInit(): void {
     logger.info('NovelService initialized')
@@ -112,19 +100,20 @@ export class NovelService extends BaseService {
     logger.info('NovelService disposed')
   }
 
-  /** Current workspace root, or null when none is open. */
+  /** Current InkOS project root, or null when none is open. */
   getWorkspace(): string | null {
     return this.workspacePath
   }
 
-  /** Open a novel-spec repository; throws when the path is not one. */
+  /** Open an InkOS project root; throws when it is not a project. */
   openWorkspace(root: string): string {
-    if (!isNovelRepo(root)) {
-      throw new Error(`not a novel-spec repository: ${root}`)
+    if (!isInkProject(root)) {
+      throw new Error(`not an inkos project root: ${root}`)
     }
     this.workspacePath = root
     this.engine?.stop()
-    this.engine = new NovelEngineClient(engineBinary(), root)
+    this.engine = null
+    this.lastError = null
     logger.info(`Novel workspace opened: ${root}`)
     return root
   }
@@ -136,6 +125,163 @@ export class NovelService extends BaseService {
     }
     this.engine?.stop()
     this.engine = null
+    this.lastError = null
+  }
+
+  /** Last engine error (cleared on success), for the renderer's error banner. */
+  lastEngineError(): InkApiError | null {
+    return this.lastError
+  }
+
+  /** InkOS project status (config) for the open workspace. */
+  async projectStatus(): Promise<InkProjectStatus> {
+    const engine = await this.engineApi()
+    return engine.request('GET', '/api/v1/project')
+  }
+
+  /** Book shelf. */
+  async listBooks(): Promise<InkBookSummary[]> {
+    const engine = await this.engineApi()
+    const { books } = await engine.request<{ books: InkBookSummary[] }>('GET', '/api/v1/books')
+    return books
+  }
+
+  /**
+   * Create a book via the engine. The engine starts an AI architect run and
+   * answers immediately; the actual book appears on disk asynchronously —
+   * poll `createStatus(bookId)` until it reports `ready`.
+   */
+  async createBook(input: {
+    title: string
+    genre: string
+    language?: 'zh' | 'en'
+    platform?: string
+    chapterWordCount?: number
+    targetChapters?: number
+    blurb?: string
+  }): Promise<{ id: string }> {
+    const engine = await this.engineApi()
+    return engine.request('POST', '/api/v1/books/create', input, 30_000)
+  }
+
+  /** Async book-creation status (creating → ready | error | missing). */
+  async createStatus(bookId: string): Promise<InkCreateStatus> {
+    const engine = await this.engineApi()
+    try {
+      return await engine.request('GET', `/api/v1/books/${encodeURIComponent(bookId)}/create-status`)
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return { status: 'missing' }
+      }
+      throw error
+    }
+  }
+
+  /** One book summary (chapters come back with the detail). */
+  async getBook(bookId: string): Promise<InkBookSummary | null> {
+    const engine = await this.engineApi()
+    try {
+      const { book } = await engine.request<{ book: InkBookSummary }>(
+        'GET',
+        `/api/v1/books/${encodeURIComponent(bookId)}`
+      )
+      return book
+    } catch (error) {
+      if (error instanceof NotFoundError) return null
+      throw error
+    }
+  }
+
+  /** Chapter list + count, folded into the book detail response. */
+  async listChapters(bookId: string): Promise<{ chapters: InkChapterSummary[]; chapterCount: number }> {
+    const engine = await this.engineApi()
+    const { chapters, nextChapter } = await engine.request<{
+      chapters: InkChapterSummary[]
+      nextChapter: number
+    }>('GET', `/api/v1/books/${encodeURIComponent(bookId)}`)
+    return { chapters, chapterCount: nextChapter - 1 }
+  }
+
+  /** Raw chapter document (title/status live in the chapter index). */
+  async getChapter(bookId: string, chapterNumber: number): Promise<InkChapterDetail> {
+    const engine = await this.engineApi()
+    try {
+      return await engine.request('GET', `/api/v1/books/${encodeURIComponent(bookId)}/chapters/${chapterNumber}`)
+    } catch (error) {
+      if (error instanceof NotFoundError) {
+        return { chapterNumber, filename: null, content: '' }
+      }
+      throw error
+    }
+  }
+
+  /** Save chapter content (engine runs the edit transaction + versions). */
+  async saveChapter(bookId: string, chapterNumber: number, content: string): Promise<void> {
+    const engine = await this.engineApi()
+    await engine.request('PUT', `/api/v1/books/${encodeURIComponent(bookId)}/chapters/${chapterNumber}`, {
+      content
+    })
+  }
+
+  /** Write the next chapter (AI). Fire-and-forget; completion arrives via SSE. */
+  async writeNext(bookId: string): Promise<void> {
+    const engine = await this.engineApi()
+    await engine.request('POST', `/api/v1/books/${encodeURIComponent(bookId)}/write-next`, {}, 30_000)
+  }
+
+  /** Audit a chapter for continuity/AI-tells. */
+  async auditChapter(bookId: string, chapterNumber: number): Promise<InkAuditResult> {
+    const engine = await this.engineApi()
+    return engine.request('POST', `/api/v1/books/${encodeURIComponent(bookId)}/audit/${chapterNumber}`, {}, 180_000)
+  }
+
+  /** Revise a chapter (polish/rewrite/spot-fix) in the engine. */
+  async reviseChapter(
+    bookId: string,
+    chapterNumber: number,
+    mode: 'polish' | 'rewrite' | 'rework' | 'spot-fix' | 'anti-detect' = 'spot-fix',
+    brief?: string
+  ): Promise<unknown> {
+    const engine = await this.engineApi()
+    return engine.request(
+      'POST',
+      `/api/v1/books/${encodeURIComponent(bookId)}/revise/${chapterNumber}`,
+      { mode, brief },
+      180_000
+    )
+  }
+
+  /** Approve a chapter. */
+  async approveChapter(bookId: string, chapterNumber: number, reason?: string): Promise<void> {
+    const engine = await this.engineApi()
+    await engine.request('POST', `/api/v1/books/${encodeURIComponent(bookId)}/chapters/${chapterNumber}/approve`, {
+      chapterNumber,
+      reason
+    })
+  }
+
+  /** Reject a chapter (engine rolls back to the previous chapter). */
+  async rejectChapter(bookId: string, chapterNumber: number, reason?: string): Promise<void> {
+    const engine = await this.engineApi()
+    await engine.request('POST', `/api/v1/books/${encodeURIComponent(bookId)}/chapters/${chapterNumber}/reject`, {
+      chapterNumber,
+      reason
+    })
+  }
+
+  /** Engine instance (started on demand); errors are captured for the UI. */
+  private async engineApi(): Promise<InkEngineClient> {
+    this.requireWorkspace()
+    if (!this.engine) {
+      this.engine = new InkEngineClient(process.execPath, inkosEntry(), this.workspacePath as string, pickPort())
+    }
+    try {
+      await this.engine.start()
+    } catch (error) {
+      this.lastError = { code: 'ENGINE_START_FAILED', message: (error as Error).message }
+      throw error
+    }
+    return this.engine
   }
 
   private requireWorkspace(): string {
@@ -144,232 +290,15 @@ export class NovelService extends BaseService {
     }
     return this.workspacePath
   }
-
-  /** Chapter list with frontmatter-derived summaries, ordered by chapter number. */
-  listChapters(): ChapterSummary[] {
-    const root = this.requireWorkspace()
-    return listChapters(root).map((id) => {
-      const doc = readChapterDocument(root, id)
-      const markers = bodySceneMarkers(doc.body)
-      return {
-        id,
-        title: doc.frontmatter.title,
-        volume: doc.frontmatter.volume,
-        chapter: doc.frontmatter.chapter,
-        status: doc.frontmatter.status,
-        countUnit: doc.frontmatter.countUnit,
-        targetChars: doc.frontmatter.targetChars,
-        proseCount: doc.frontmatter.proseCount,
-        sceneCount: (doc.frontmatter.scenes ?? []).length,
-        sceneMarkers: markers
-      }
-    })
-  }
-
-  /** Full chapter document with a fresh prose count. */
-  readChapter(chapterId: string): ChapterRead {
-    const root = this.requireWorkspace()
-    const doc = readChapterDocument(root, chapterId)
-    const unit = doc.frontmatter.countUnit ?? 'words'
-    return { ...doc, proseCount: countProse(doc.body, unit) }
-  }
-
-  /** Per-scene context for a chapter (plan + markers + scene prose). */
-  sceneContext(chapterId: string): SceneContext {
-    const root = this.requireWorkspace()
-    const doc = readChapterDocument(root, chapterId)
-    return {
-      chapterId,
-      scenes: chapterScenes(doc),
-      bodySceneMarkers: bodySceneMarkers(doc.body),
-      proseCount: countProse(doc.body, doc.frontmatter.countUnit ?? 'words')
-    }
-  }
-
-  /** Review records for a chapter (latest first). */
-  listReviews(chapterId: string): ReviewRecordSummary[] {
-    const root = this.requireWorkspace()
-    const dir = path.join(root, 'reviews')
-    let files: string[]
-    try {
-      files = readdirSync(dir).filter((name) => name.startsWith(`${chapterId}-`) && name.endsWith('.json'))
-    } catch {
-      return []
-    }
-    files.sort()
-    return files.reverse().map((file) => {
-      try {
-        const record = JSON.parse(readFileSync(path.join(dir, file), 'utf8')) as {
-          chapter_id?: string
-          status?: string
-          reviewers?: unknown[]
-          findings?: unknown[]
-        }
-        return {
-          file,
-          chapterId: record.chapter_id,
-          status: record.status,
-          reviewerCount: record.reviewers?.length ?? 0,
-          findingCount: record.findings?.length ?? 0
-        }
-      } catch {
-        return { file, reviewerCount: 0, findingCount: 0 }
-      }
-    })
-  }
-
-  /** Workspace-level summary (spec version, chapter counts). */
-  workspaceStatus(): { path: string; chapterCount: number; specVersion?: string } {
-    const root = this.requireWorkspace()
-    const chapterCount = listChapters(root).length
-    let specVersion: string | undefined
-    try {
-      const spec = JSON.parse(readFileSync(path.join(root, '.novel', 'spec.json'), 'utf8')) as {
-        version?: string
-      }
-      specVersion = spec.version
-    } catch {
-      // spec.json is optional in v0.1; absence is fine.
-    }
-    return { path: root, chapterCount, specVersion }
-  }
-
-  /**
-   * Read-only state view as of a chapter (0 = current). Mirrors the engine's
-   * as-of-chapter semantics; writes stay behind the engine's guarded tools.
-   */
-  stateRead(asOfChapter: number): NovelState {
-    return readNovelState(this.requireWorkspace(), asOfChapter)
-  }
-
-  /**
-   * Run the three reviewer passes for a chapter and append the record to the
-   * engine's reviews ledger when the gate passes. Writes happen in the engine
-   * process only — this host never touches the working tree.
-   */
-  async runReview(chapterId: string, modelId: string): Promise<ReviewOutcome> {
-    const root = this.requireWorkspace()
-    const usableModelId = toUsableModelId(modelId) ?? null
-    if (!usableModelId) {
-      throw new Error(`unusable review model id: ${modelId}`)
-    }
-    const engine = await this.requireEngine()
-    return runChapterReview(engine, root, chapterId, usableModelId)
-  }
-
-  /**
-   * Finalize a chapter via the engine — the engine enforces scene statuses,
-   * prose-length range, the latest review record, and a clean consistency
-   * report before mutating frontmatter.
-   */
-  async finalizeChapter(chapterId: string, status: 'reviewed' | 'final'): Promise<Record<string, unknown>> {
-    const engine = await this.requireEngine()
-    const result = await engine.callTool('finalize_chapter', { chapter_id: chapterId, status })
-    if (result.isError) {
-      throw new Error(result.text)
-    }
-    return JSON.parse(result.text) as Record<string, unknown>
-  }
-
-  /** Git status of the workspace, reported by the engine process. */
-  async repoStatus(): Promise<RepoStatus> {
-    const engine = await this.requireEngine()
-    const result = await engine.callTool('git_status', { include_untracked: true })
-    if (result.isError) {
-      throw new Error(result.text)
-    }
-    return parseRepoStatus(result.text)
-  }
-
-  /** Stage all workspace changes and commit with the given message (engine-side git). */
-  async commitChanges(message: string): Promise<GitCommitResult> {
-    const engine = await this.requireEngine()
-    const result = await engine.callTool('git_commit', { message })
-    if (result.isError) {
-      throw new Error(result.text)
-    }
-    return parseGitCommit(result.text)
-  }
-
-  /** Hard-reset the workspace to a target commit; the engine refuses while dirty. */
-  async rollback(target: string): Promise<GitRollbackResult> {
-    const engine = await this.requireEngine()
-    const result = await engine.callTool('git_rollback', { target })
-    if (result.isError) {
-      throw new Error(result.text)
-    }
-    return parseGitRollback(result.text)
-  }
-
-  private async requireEngine(): Promise<NovelEngineClient> {
-    this.requireWorkspace()
-    if (!this.engine) {
-      this.engine = new NovelEngineClient(engineBinary(), this.workspacePath as string)
-    }
-    await this.engine.start()
-    return this.engine
-  }
 }
 
-/** Engine binary path: REASONIX_NOVEL_BIN env override, else `reasonix-novel` on PATH. */
-function engineBinary(): string {
-  return process.env.REASONIX_NOVEL_BIN ?? 'reasonix-novel'
+/** InkOS engine entry: `packages/studio/dist/api/index.js` under INKOS_ROOT. */
+function inkosEntry(): string {
+  const root = process.env.INKOS_ROOT ?? 'D:/Github_Open/inkos'
+  return path.join(root, 'packages', 'studio', 'dist', 'api', 'index.js')
 }
 
-/**
- * The engine speaks snake_case (git status porcelain convention); the IPC
- * schemas are camelCase. Decode and rename explicitly so no field is silently
- * stripped by zod (the same trap that bit timelineEventSchema).
- */
-
-type SnakeRecord = Record<string, unknown>
-
-function parseRepoStatus(text: string): RepoStatus {
-  const raw = JSON.parse(text) as SnakeRecord
-  return {
-    branch: String(raw.branch ?? ''),
-    shortSha: String(raw.short_sha ?? ''),
-    commitMessage: raw.commit_message === undefined ? undefined : String(raw.commit_message),
-    dirty: Boolean(raw.dirty),
-    staged: toStringArray(raw.staged),
-    modified: toStringArray(raw.modified),
-    deleted: toStringArray(raw.deleted),
-    untracked: toStringArray(raw.untracked),
-    ahead: toOptionalNumber(raw.ahead),
-    behind: toOptionalNumber(raw.behind),
-    noCommitsYet: raw.no_commits_yet === undefined ? undefined : Boolean(raw.no_commits_yet),
-    isGitRepo: Boolean(raw.is_git_repo),
-    reason: raw.reason === undefined ? undefined : String(raw.reason)
-  }
-}
-
-function parseGitCommit(text: string): GitCommitResult {
-  const raw = JSON.parse(text) as SnakeRecord
-  return {
-    shortSha: String(raw.short_sha ?? ''),
-    commit: String(raw.commit ?? ''),
-    files: toOptionalNumber(raw.files),
-    insertions: toOptionalNumber(raw.insertions),
-    deletions: toOptionalNumber(raw.deletions)
-  }
-}
-
-function parseGitRollback(text: string): GitRollbackResult {
-  const raw = JSON.parse(text) as SnakeRecord
-  return {
-    target: String(raw.target ?? ''),
-    shortSha: String(raw.short_sha ?? ''),
-    commit: String(raw.commit ?? ''),
-    files: toOptionalNumber(raw.files),
-    resetHard: raw.reset_hard === undefined ? undefined : Boolean(raw.reset_hard),
-    commitSummary: raw.commit_summary === undefined ? undefined : String(raw.commit_summary)
-  }
-}
-
-function toStringArray(value: unknown): string[] | undefined {
-  return Array.isArray(value) ? value.map(String) : undefined
-}
-
-function toOptionalNumber(value: unknown): number | undefined {
-  return typeof value === 'number' ? value : undefined
+/** True when the path is an InkOS project root (has inkos.json). */
+function isInkProject(root: string): boolean {
+  return existsSync(path.join(root, 'inkos.json'))
 }

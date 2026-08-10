@@ -2,13 +2,12 @@
 import '@testing-library/jest-dom/vitest'
 
 import type { OutputFor } from '@shared/ipc/types'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   request: vi.fn(),
-  selectFolder: vi.fn(),
-  confirm: vi.fn(() => true)
+  selectFolder: vi.fn()
 }))
 
 vi.mock('@renderer/ipc', () => ({
@@ -16,116 +15,86 @@ vi.mock('@renderer/ipc', () => ({
 }))
 
 vi.mock('@renderer/services/toast', () => ({
-  toast: { error: vi.fn() }
+  toast: { error: vi.fn(), success: vi.fn() }
 }))
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (key: string) => key })
 }))
 
-const status: OutputFor<'novel.get_status'> = {
-  path: 'D:/repo/sample-novel',
-  chapterCount: 3,
-  specVersion: '0.1'
+const projectStatus: OutputFor<'novel.get_status'> = {
+  name: '测试项目',
+  language: 'zh',
+  languageExplicit: true,
+  model: 'noop-model',
+  provider: 'openai'
 }
 
-const chapters: OutputFor<'novel.list_chapters'> = [
+const books: OutputFor<'novel.list_books'> = [
   {
-    id: 'v01-c001',
-    title: 'The Shipwreck',
-    volume: 1,
-    chapter: 1,
-    status: 'final',
-    countUnit: 'words',
-    targetChars: 585,
-    proseCount: 585,
-    sceneCount: 1,
-    sceneMarkers: ['s01']
-  },
-  {
-    id: 'v01-c002',
-    title: 'The Note',
-    volume: 1,
-    chapter: 2,
-    status: 'final',
-    countUnit: 'words',
-    targetChars: 585,
-    proseCount: 585,
-    sceneCount: 1,
-    sceneMarkers: ['s01']
-  },
-  {
-    id: 'v01-c003',
-    title: 'The Fever',
-    volume: 1,
-    chapter: 3,
-    status: 'reviewed',
-    countUnit: 'words',
-    targetChars: 585,
-    proseCount: 585,
-    sceneCount: 3,
-    sceneMarkers: ['s01', 's02', 's03']
+    id: 'demo',
+    title: '灯塔守夜人',
+    status: 'active',
+    platform: 'other',
+    genre: '都市',
+    targetChapters: 100,
+    chapters: 3,
+    chapterCount: 3,
+    lastChapterNumber: 3,
+    totalWords: 6200,
+    approvedChapters: 2,
+    pendingReview: 1,
+    pendingReviewChapters: 1,
+    failedReview: 0,
+    failedChapters: 0,
+    updatedAt: '2026-08-10T00:00:00Z',
+    chaptersWritten: 3
   }
 ]
 
-const novelState: OutputFor<'novel.state_read'> = {
-  world: { name: 'The Lighthouse Keeper world', era: 'Post-Blackout, year 7', premise: 'premise', rules: ['rule 1'] },
-  characters: [
-    {
-      id: 'keeper',
-      name: 'Aren',
-      current: {
-        location: "Lighthouse island, keeper's quarters",
-        psychology: 'Hope and duty in open conflict',
-        knowledge: ['Mira left for the mainland 4 years ago.'],
-        inventory: ['brass key to the archive', 'tide chart'],
-        relationships: { stranger: 'Half-convinced, half-unsettled' },
-        status: 'alive'
-      },
-      asOfChapter: 3
-    }
-  ],
-  foreshadow: [
-    {
-      id: 'fs-storms',
-      planted_at: 'v01-c002',
-      status: 'planted',
-      description: 'The winter storms will seal the island.'
-    }
-  ],
-  timeline: [
-    {
-      id: 'ev-shipwreck',
-      chapter: 'v01-c001',
-      absolute_time: 'autumn equinox, dawn',
-      description: 'A stranger washes ashore.',
-      participants: ['keeper', 'stranger']
-    }
-  ],
-  pov: { chapter: 'v01-c003', viewpoint: 'close-third, Aren', tense: 'past' }
-}
+const chapters: OutputFor<'novel.list_chapters'>['chapters'] = [
+  {
+    number: 1,
+    title: '第一章 风暴',
+    status: 'approved',
+    wordCount: 2100,
+    auditIssueCount: 0,
+    updatedAt: '2026-08-01T00:00:00Z',
+    fileName: '1_风暴.md',
+    createdAt: '2026-08-01T00:00:00Z'
+  },
+  {
+    number: 2,
+    title: '第二章 灯',
+    status: 'approved',
+    wordCount: 1900,
+    auditIssueCount: 0,
+    updatedAt: '2026-08-02T00:00:00Z',
+    fileName: '2_灯.md',
+    createdAt: '2026-08-02T00:00:00Z'
+  },
+  {
+    number: 3,
+    title: '第三章 潮汐',
+    status: 'ready-for-review',
+    wordCount: 2200,
+    auditIssueCount: 1,
+    updatedAt: '2026-08-03T00:00:00Z',
+    fileName: '3_潮汐.md',
+    createdAt: '2026-08-03T00:00:00Z'
+  }
+]
 
-const repoStatus: OutputFor<'novel.repo_status'> = {
-  branch: 'main',
-  shortSha: 'abc1234',
-  commitMessage: 'feat: first draft',
-  dirty: true,
-  modified: ['chapters/v01-c003.md'],
-  deleted: [],
-  untracked: ['reviews/v01-c003-004.json'],
-  ahead: 1,
-  behind: 0,
-  isGitRepo: true
+const chapterDetail: OutputFor<'novel.get_chapter'> = {
+  chapterNumber: 3,
+  filename: '3_潮汐.md',
+  content: '潮水退去，露出礁石下的铁锚。\n\n他站在灯塔顶端，望向海平面。'
 }
 
 import NovelPage from '../NovelPage'
 
 beforeEach(() => {
-  // window.api is the preload bridge; `file.selectFolder` is used by openWorkspace.
   Object.assign(window.api, { file: { selectFolder: mocks.selectFolder } })
-  mocks.confirm.mockReset()
-  mocks.confirm.mockReturnValue(true)
-  window.confirm = mocks.confirm
 })
 
 afterEach(() => {
@@ -134,142 +103,105 @@ afterEach(() => {
 })
 
 describe('NovelPage', () => {
-  it('opens a workspace and shows the state tab with as-of-chapter selector', async () => {
+  it('shows the shelf with books and opens a book', async () => {
     mocks.request.mockImplementation(async (route: string, input?: any) => {
-      if (route === 'novel.get_status') return status
-      if (route === 'novel.open_workspace') return input.root
-      if (route === 'novel.list_chapters') return chapters
-      if (route === 'novel.state_read') return novelState
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
+      if (route === 'novel.get_chapter') return chapterDetail
       return null
     })
-    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
 
     render(<NovelPage />)
 
-    // Empty state first (two open buttons: header + empty state).
-    expect(screen.getByText('novel.empty_description')).toBeInTheDocument()
+    // Shelf with book card.
+    expect(await screen.findByText('novel.shelf_heading')).toBeInTheDocument()
+    expect(screen.getByText('灯塔守夜人')).toBeInTheDocument()
 
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
-    })
+    // Open the book.
+    fireEvent.click(screen.getByText('灯塔守夜人'))
+    expect(await screen.findByText('novel.toc_heading')).toBeInTheDocument()
+    expect(screen.getByText('第一章 风暴')).toBeInTheDocument()
 
-    expect(await screen.findByText('novel.tab_chapter')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'novel.tab_state' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_state' }))
-
-    // State view with characters, foreshadow, timeline, POV.
-    expect(await screen.findByText('novel.state_heading')).toBeInTheDocument()
-    expect(screen.getByText('Aren')).toBeInTheDocument()
-    expect(screen.getByText(/The Lighthouse Keeper world/)).toBeInTheDocument()
-    expect(screen.getByText('fs-storms')).toBeInTheDocument()
-    expect(screen.getByText('A stranger washes ashore.')).toBeInTheDocument()
-    expect(screen.getByText('close-third, Aren')).toBeInTheDocument()
+    // Select a chapter and read it.
+    fireEvent.click(screen.getByText('第三章 潮汐'))
+    expect(await screen.findByText(/潮水退去/)).toBeInTheDocument()
   })
 
-  it('reloads state when the as-of-chapter selector changes', async () => {
+  it('creates a book via the wizard, waits for ready, and opens it', async () => {
     mocks.request.mockImplementation(async (route: string, input?: any) => {
-      if (route === 'novel.get_status') return status
-      if (route === 'novel.open_workspace') return input.root
-      if (route === 'novel.list_chapters') return chapters
-      if (route === 'novel.state_read') return novelState
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.create_book') return { id: 'new-book' }
+      if (route === 'novel.create_status') return { status: 'ready' }
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? books[0]
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
       return null
     })
-    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
 
     render(<NovelPage />)
+    await screen.findByText('novel.shelf_heading')
 
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
+    fireEvent.change(screen.getByPlaceholderText('novel.create_title_placeholder'), {
+      target: { value: '新书' }
     })
-    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_state' }))
-    await screen.findByText('novel.state_heading')
-
-    const calls = mocks.request.mock.calls.filter(([route]) => route === 'novel.state_read')
-    expect(calls).toHaveLength(1)
-    expect(calls[0][1]).toEqual({ asOfChapter: 0 })
-
-    fireEvent.click(screen.getByRole('button', { name: 'c001' }))
+    fireEvent.click(screen.getByRole('button', { name: 'novel.create_button' }))
 
     await waitFor(() => {
-      const stateCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.state_read')
-      expect(stateCalls).toHaveLength(2)
-      expect(stateCalls[1][1]).toEqual({ asOfChapter: 1 })
+      const calls = mocks.request.mock.calls.filter(([route]) => route === 'novel.create_book')
+      expect(calls).toHaveLength(1)
+      expect(calls[0][1]).toMatchObject({ title: '新书', language: 'zh' })
+    })
+    await waitFor(() => {
+      const calls = mocks.request.mock.calls.filter(([route]) => route === 'novel.create_status')
+      expect(calls).toHaveLength(1)
+      expect(calls[0][1]).toEqual({ bookId: 'new-book' })
     })
   })
 
-  it('shows repo status and commits the workspace from the review tab', async () => {
+  it('triggers write-next and refreshes the chapter list', async () => {
     mocks.request.mockImplementation(async (route: string, input?: any) => {
-      if (route === 'novel.get_status') return status
-      if (route === 'novel.open_workspace') return input.root
-      if (route === 'novel.list_chapters') return chapters
-      if (route === 'novel.repo_status') return repoStatus
-      if (route === 'novel.git_commit') return { shortSha: 'def5678', commit: 'deadbeef' }
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
       return null
     })
-    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
 
     render(<NovelPage />)
+    await screen.findByText('novel.shelf_heading')
+    fireEvent.click(screen.getByText('灯塔守夜人'))
+    await screen.findByText('novel.toc_heading')
 
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
-    })
-
-    // Repo bar shows the git state.
-    expect(await screen.findByText('main')).toBeInTheDocument()
-    expect(screen.getByText('@abc1234')).toBeInTheDocument()
-    expect(screen.getByText('novel.repo_dirty')).toBeInTheDocument()
-
-    // Select a chapter, then open the review tab to find the repository section.
-    fireEvent.click(screen.getByRole('button', { name: /The Fever/ }))
-    await screen.findByText('novel.tab_review')
-    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_review' }))
-    await screen.findByText('novel.review_heading')
-    expect(screen.getByText('novel.repo_heading')).toBeInTheDocument()
-    expect(screen.getByText('feat: first draft')).toBeInTheDocument()
-    expect(screen.getByText(/novel.repo_ahead/)).toBeInTheDocument()
-
-    fireEvent.change(screen.getByPlaceholderText('novel.commit_placeholder'), {
-      target: { value: 'feat: first draft' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'novel.commit_button' }))
+    // Two write-next buttons (header + toc) — use the header one.
+    fireEvent.click(screen.getAllByRole('button', { name: 'novel.write_next' })[0])
 
     await waitFor(() => {
-      const commitCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.git_commit')
-      expect(commitCalls).toHaveLength(1)
-      expect(commitCalls[0][1]).toEqual({ message: 'feat: first draft' })
+      const calls = mocks.request.mock.calls.filter(([route]) => route === 'novel.write_next')
+      expect(calls).toHaveLength(1)
+      expect(calls[0][1]).toEqual({ bookId: 'demo' })
     })
   })
 
-  it('rolls back to a target commit after confirmation', async () => {
+  it('opens a workspace via folder picker when no workspace is open', async () => {
     mocks.request.mockImplementation(async (route: string, input?: any) => {
-      if (route === 'novel.get_status') return status
+      if (route === 'novel.get_status') return null
       if (route === 'novel.open_workspace') return input.root
-      if (route === 'novel.list_chapters') return chapters
-      if (route === 'novel.repo_status') return repoStatus
-      if (route === 'novel.git_rollback') return { target: 'abc1234', shortSha: 'abc1234', commit: 'aabbcc' }
+      if (route === 'novel.list_books') return []
       return null
     })
-    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
+    mocks.selectFolder.mockResolvedValue('D:/novel/我的小说')
 
     render(<NovelPage />)
 
-    await act(async () => {
-      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
-    })
-    fireEvent.click(screen.getByRole('button', { name: /The Fever/ }))
-    await screen.findByText('novel.tab_review')
-    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_review' }))
-    await screen.findByText('novel.repo_heading')
-
-    fireEvent.change(screen.getByPlaceholderText('novel.rollback_placeholder'), { target: { value: 'abc1234' } })
-    fireEvent.click(screen.getByRole('button', { name: 'novel.rollback_button' }))
+    // Empty state first.
+    expect(await screen.findByText('novel.empty_heading')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'novel.open_workspace' }))
 
     await waitFor(() => {
-      expect(mocks.confirm).toHaveBeenCalledWith('novel.rollback_confirm')
-      const rollbackCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.git_rollback')
-      expect(rollbackCalls).toHaveLength(1)
-      expect(rollbackCalls[0][1]).toEqual({ target: 'abc1234' })
+      expect(mocks.request).toHaveBeenCalledWith('novel.open_workspace', { root: 'D:/novel/我的小说' })
     })
+    expect(await screen.findByText('novel.shelf_heading')).toBeInTheDocument()
   })
 })

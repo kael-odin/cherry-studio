@@ -1,892 +1,575 @@
-import { Badge, Button, Skeleton } from '@cherrystudio/ui'
-import { usePreference } from '@data/hooks/usePreference'
+import { Badge, Button, Input, Skeleton } from '@cherrystudio/ui'
 import { loggerService } from '@logger'
 import { ipcApi } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
 import type { OutputFor } from '@shared/ipc/types'
-import { BookOpen, Flag, FolderOpen, GitBranch, Play, RotateCcw, ShieldCheck, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  BookOpen,
+  ChevronRight,
+  FolderOpen,
+  Loader2,
+  PenLine,
+  Plus,
+  RefreshCw,
+  Sparkles,
+  Wand2
+} from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 const logger = loggerService.withContext('NovelPage')
 
-type ChapterRead = OutputFor<'novel.read_chapter'>
-type SceneContext = OutputFor<'novel.scene_context'>
-type WorkspaceStatus = OutputFor<'novel.get_status'>
-type ChapterSummary = OutputFor<'novel.list_chapters'>[number]
-type NovelState = OutputFor<'novel.state_read'>
-type ReviewOutcome = OutputFor<'novel.run_review'>
-type RepoStatus = OutputFor<'novel.repo_status'>
+type BookSummary = OutputFor<'novel.list_books'>[number]
+type ChapterSummary = OutputFor<'novel.list_chapters'>['chapters'][number]
+type ChapterDetail = OutputFor<'novel.get_chapter'>
 
-/** Read-only novel-spec workspace viewer. P1 panel: open a repo, list
- * chapters/scenes/reviews, preview a chapter and its durable state. State
- * writes stay behind the engine (see VISION.md). */
+/** 章节目录状态 → 中文徽章/颜色映射. */
+type BadgeTone = 'default' | 'secondary' | 'destructive' | 'outline'
+const STATUS_STYLE: Record<string, { label: string; tone: BadgeTone }> = {
+  outlining: { label: 'novel.status_outlining', tone: 'secondary' },
+  planned: { label: 'novel.status_planned', tone: 'secondary' },
+  drafting: { label: 'novel.status_drafting', tone: 'default' },
+  draft: { label: 'novel.status_draft', tone: 'default' },
+  drafted: { label: 'novel.status_draft', tone: 'default' },
+  auditing: { label: 'novel.status_reviewing', tone: 'default' },
+  'audit-passed': { label: 'novel.status_audit_passed', tone: 'default' },
+  'audit-failed': { label: 'novel.status_audit_failed', tone: 'destructive' },
+  revising: { label: 'novel.status_reviewing_revision', tone: 'default' },
+  'ready-for-review': { label: 'novel.status_pending_review', tone: 'default' },
+  approved: { label: 'novel.status_approved', tone: 'default' },
+  rejected: { label: 'novel.status_rejected', tone: 'destructive' },
+  published: { label: 'novel.status_published', tone: 'default' }
+}
+
+function statusOf(status: string | undefined): { label: string; tone: BadgeTone } {
+  return (status && STATUS_STYLE[status]) || { label: status ?? 'novel.status_unknown', tone: 'secondary' }
+}
+
+/**
+ * 中文友好的小说工作台：书架 → 书详情 → 章节读写 → AI 写作/审稿。
+ * 数据来自 InkOS 引擎（经主进程 NovelService 转发）。
+ */
 function NovelPage() {
   const { t } = useTranslation()
-  const [status, setStatus] = useState<WorkspaceStatus | null>(null)
-  const [chapters, setChapters] = useState<ChapterSummary[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [chapterRead, setChapterRead] = useState<ChapterRead | null>(null)
-  const [sceneContext, setSceneContext] = useState<SceneContext | null>(null)
-  const [reviews, setReviews] = useState<OutputFor<'novel.list_reviews'>>([])
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [tab, setTab] = useState<'chapter' | 'state' | 'review'>('chapter')
-  const [asOfChapter, setAsOfChapter] = useState(0)
-  const [novelState, setNovelState] = useState<NovelState | null>(null)
-  const [stateLoading, setStateLoading] = useState(false)
-  const [reviewOutcome, setReviewOutcome] = useState<ReviewOutcome | null>(null)
-  const [reviewRunning, setReviewRunning] = useState(false)
-  const [finalizing, setFinalizing] = useState(false)
-  const [finalizeResult, setFinalizeResult] = useState<string | null>(null)
-  const [quickAssistantModelId] = usePreference('feature.quick_assistant.model_id')
-  const [chatDefaultModelId] = usePreference('chat.default_model_id')
-  const reviewModelId = quickAssistantModelId ?? chatDefaultModelId
-  const [repoStatus, setRepoStatus] = useState<RepoStatus | null>(null)
-  const [commitMessage, setCommitMessage] = useState('')
-  const [committing, setCommitting] = useState(false)
-  const [rollbackTarget, setRollbackTarget] = useState('')
-  const [rollingBack, setRollingBack] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [loading, setLoading] = useState(false)
 
-  const refreshStatus = useCallback(async () => {
+  // ── 书架 ──
+  const [books, setBooks] = useState<BookSummary[]>([])
+  const [booksLoading, setBooksLoading] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createTitle, setCreateTitle] = useState('')
+  const [createGenre, setCreateGenre] = useState('')
+  const [createTargetChapters, setCreateTargetChapters] = useState('200')
+  const [createWordCount, setCreateWordCount] = useState('2000')
+
+  // ── 书详情 ──
+  const [book, setBook] = useState<BookSummary | null>(null)
+  const [chapters, setChapters] = useState<ChapterSummary[]>([])
+  const [chapterDetail, setChapterDetail] = useState<ChapterDetail | null>(null)
+  const [selectedChapter, setSelectedChapter] = useState<number | null>(null)
+  const [actionBusy, setActionBusy] = useState(false)
+  const [actionLabel, setActionLabel] = useState('')
+
+  const refreshBooks = useCallback(async () => {
+    setBooksLoading(true)
     try {
-      setStatus(await ipcApi.request('novel.get_status'))
+      setBooks(await ipcApi.request('novel.list_books'))
     } catch (err) {
-      logger.error('Failed to read novel workspace status', err as Error)
-      setError(String(err))
+      logger.error('Failed to list books', err as Error)
+      toast.error(String(err))
+    } finally {
+      setBooksLoading(false)
     }
   }, [])
 
-  useEffect(() => {
-    void refreshStatus()
-  }, [refreshStatus])
+  const refreshChapters = useCallback(async (bookId: string) => {
+    try {
+      const { chapters: list } = await ipcApi.request('novel.list_chapters', { bookId })
+      setChapters(list)
+    } catch (err) {
+      logger.error('Failed to list chapters', err as Error)
+      toast.error(String(err))
+    }
+  }, [])
 
+  const openBook = useCallback(
+    async (id: string) => {
+      setLoading(true)
+      try {
+        const detail = await ipcApi.request('novel.get_book', { bookId: id })
+        if (!detail) {
+          toast.error(t('novel.book_missing'))
+          return
+        }
+        setBook(detail)
+        await refreshChapters(id)
+      } catch (err) {
+        logger.error('Failed to open book', err as Error)
+        toast.error(String(err))
+      } finally {
+        setLoading(false)
+      }
+    },
+    [refreshChapters, t]
+  )
+
+  const selectChapter = useCallback(async (bookId: string, number: number) => {
+    setSelectedChapter(number)
+    setChapterDetail(null)
+    try {
+      setChapterDetail(await ipcApi.request('novel.get_chapter', { bookId, chapterNumber: number }))
+    } catch (err) {
+      logger.error('Failed to read chapter', err as Error)
+      toast.error(String(err))
+    }
+  }, [])
+
+  const backToShelf = useCallback(() => {
+    setBook(null)
+    setChapters([])
+    setChapterDetail(null)
+    setSelectedChapter(null)
+    setActionBusy(false)
+    setActionLabel('')
+    void refreshBooks()
+  }, [refreshBooks])
+
+  // ── AI 动作（引擎 fire-and-forget；完成后刷新目录） ──
+  const runAction = useCallback(
+    async (kind: 'write_next' | 'audit' | 'revise', chapterNumber?: number) => {
+      if (!book) return
+      setActionBusy(true)
+      setActionLabel(kind)
+      try {
+        if (kind === 'write_next') {
+          await ipcApi.request('novel.write_next', { bookId: book.id })
+        } else if (kind === 'audit') {
+          const result = await ipcApi.request('novel.audit_chapter', {
+            bookId: book.id,
+            chapterNumber: chapterNumber ?? 1
+          })
+          if (result.passed === false) {
+            toast.error(t('novel.run_failed'))
+          } else if (result.passed === true) {
+            toast.success(t('novel.run_succeeded'))
+          }
+        } else {
+          await ipcApi.request('novel.revise_chapter', {
+            bookId: book.id,
+            chapterNumber: chapterNumber ?? 1
+          })
+        }
+        // 引擎异步写作/修订完成后刷新目录与章节
+        await refreshChapters(book.id)
+        if (book) void openBook(book.id)
+      } catch (err) {
+        logger.error('AI run failed', err as Error)
+        toast.error(String(err))
+      } finally {
+        setActionBusy(false)
+        setActionLabel('')
+      }
+    },
+    [book, refreshChapters, openBook, t]
+  )
+
+  const approveChapter = useCallback(
+    async (number: number) => {
+      if (!book) return
+      try {
+        await ipcApi.request('novel.approve_chapter', { bookId: book.id, chapterNumber: number })
+        toast.success(t('novel.run_succeeded'))
+        await refreshChapters(book.id)
+      } catch (err) {
+        logger.error('Failed to approve chapter', err as Error)
+        toast.error(String(err))
+      }
+    },
+    [book, refreshChapters, t]
+  )
+
+  const rejectChapter = useCallback(
+    async (number: number) => {
+      if (!book) return
+      try {
+        await ipcApi.request('novel.reject_chapter', { bookId: book.id, chapterNumber: number })
+        toast.success(t('novel.run_succeeded'))
+        await refreshChapters(book.id)
+      } catch (err) {
+        logger.error('Failed to reject chapter', err as Error)
+        toast.error(String(err))
+      }
+    },
+    [book, refreshChapters, t]
+  )
+
+  // ── 初始化：打开工作区 ──
   const openWorkspace = useCallback(async () => {
     try {
       const folder = await window.api.file.selectFolder()
       if (!folder) return
-      setBusy(true)
-      setError(null)
+      setLoading(true)
       try {
         await ipcApi.request('novel.open_workspace', { root: folder })
-        await refreshStatus()
-        setChapters(await ipcApi.request('novel.list_chapters'))
-        setSelectedId(null)
-        setChapterRead(null)
-        setSceneContext(null)
-        setReviews([])
-        setNovelState(null)
-        setReviewOutcome(null)
-        setFinalizeResult(null)
-        setAsOfChapter(0)
-        setTab('chapter')
+        setOpen(true)
+        await refreshBooks()
       } finally {
-        setBusy(false)
+        setLoading(false)
       }
     } catch (err) {
-      logger.error('Failed to open novel workspace', err as Error)
-      toast.error(t('novel.open_failed'))
-      setError(String(err))
+      logger.error('Failed to open workspace', err as Error)
+      toast.error(String(err))
     }
-  }, [refreshStatus, t])
+  }, [refreshBooks])
 
-  const closeWorkspace = useCallback(async () => {
-    try {
-      await ipcApi.request('novel.close_workspace')
-      setStatus(null)
-      setChapters([])
-      setSelectedId(null)
-      setChapterRead(null)
-      setSceneContext(null)
-      setReviews([])
-      setNovelState(null)
-      setReviewOutcome(null)
-      setFinalizeResult(null)
-      setAsOfChapter(0)
-      setTab('chapter')
-      setError(null)
-    } catch (err) {
-      logger.error('Failed to close novel workspace', err as Error)
-      toast.error(t('novel.close_failed'))
-    }
-  }, [t])
-
-  // Load the read-only state view when the state tab is active.
+  // ── 首次挂载：自动打开上次工作区 ──
   useEffect(() => {
-    if (!status || tab !== 'state') return
-    let cancelled = false
-    setStateLoading(true)
-    ipcApi
-      .request('novel.state_read', { asOfChapter })
-      .then((state) => {
-        if (!cancelled) setNovelState(state)
-      })
-      .catch((err) => {
-        logger.error('Failed to read novel state', err as Error)
-        if (!cancelled) setError(String(err))
-      })
-      .finally(() => {
-        if (!cancelled) setStateLoading(false)
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [status, tab, asOfChapter])
-
-  const selectChapter = useCallback(async (chapterId: string) => {
-    setSelectedId(chapterId)
-    setError(null)
-    setChapterRead(null)
-    setSceneContext(null)
-    setReviews([])
-    try {
-      const [read, scenes, reviewList] = await Promise.all([
-        ipcApi.request('novel.read_chapter', { chapterId }),
-        ipcApi.request('novel.scene_context', { chapterId }),
-        ipcApi.request('novel.list_reviews', { chapterId })
-      ])
-      setChapterRead(read)
-      setSceneContext(scenes)
-      setReviews(reviewList)
-    } catch (err) {
-      logger.error('Failed to read chapter', err as Error, { chapterId })
-      setError(String(err))
-    }
-  }, [])
-
-  // Refresh the open workspace's chapters when the tab gains focus, so edits
-  // made by the CLI/host (engine runs, review gates) show up on return.
-  useEffect(() => {
-    const onFocus = () => {
-      if (!status) return
-      void ipcApi
-        .request('novel.list_chapters')
-        .then(setChapters)
-        .catch((err) => logger.warn('Failed to refresh chapter list on focus', err as Error))
-    }
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [status])
-
-  const runReview = useCallback(async () => {
-    if (!selectedId || !reviewModelId) return
-    setReviewRunning(true)
-    setFinalizeResult(null)
-    setError(null)
-    try {
-      const outcome = await ipcApi.request('novel.run_review', {
-        chapterId: selectedId,
-        modelId: reviewModelId
-      })
-      setReviewOutcome(outcome)
-      setReviews(await ipcApi.request('novel.list_reviews', { chapterId: selectedId }))
-    } catch (err) {
-      logger.error('Failed to run novel review', err as Error)
-      toast.error(t('novel.review_run'))
-      setError(String(err))
-    } finally {
-      setReviewRunning(false)
-    }
-  }, [selectedId, reviewModelId, t])
-
-  const finalize = useCallback(
-    async (status: 'reviewed' | 'final') => {
-      if (!selectedId) return
-      setFinalizing(true)
-      setError(null)
+    void (async () => {
       try {
-        const result = await ipcApi.request('novel.finalize', { chapterId: selectedId, status })
-        setFinalizeResult(t('novel.review_finalized', { status: String(result.status) }))
-        await refreshStatus()
-        setChapters(await ipcApi.request('novel.list_chapters'))
-      } catch (err) {
-        logger.error('Failed to finalize novel chapter', err as Error)
-        toast.error(t('novel.review_finalize'))
-        setError(String(err))
-      } finally {
-        setFinalizing(false)
+        const status = await ipcApi.request('novel.get_status')
+        if (status) {
+          setOpen(true)
+          await refreshBooks()
+        }
+      } catch {
+        // 未打开工作区 — 显示空状态
       }
-    },
-    [selectedId, refreshStatus, t]
-  )
+    })()
+  }, [refreshBooks])
 
-  const refreshRepoStatus = useCallback(async () => {
-    if (!status) return
-    try {
-      setRepoStatus(await ipcApi.request('novel.repo_status'))
-    } catch (err) {
-      logger.warn('Failed to read novel repo status', err as Error)
-      setRepoStatus(null)
+  // ── 创建书（引擎异步构建设定，轮询 create-status） ──
+  const createBook = useCallback(async () => {
+    if (!createTitle.trim()) {
+      toast.error(t('novel.create_title_required'))
+      return
     }
-  }, [status])
-
-  useEffect(() => {
-    void refreshRepoStatus()
-  }, [refreshRepoStatus])
-
-  const commitChanges = useCallback(async () => {
-    const message = commitMessage.trim()
-    if (!message) return
-    setCommitting(true)
-    setError(null)
+    setCreating(true)
     try {
-      const result = await ipcApi.request('novel.git_commit', { message })
-      setCommitMessage('')
-      toast.success(t('novel.commit_done', { shortSha: String(result.shortSha) }))
-      await refreshRepoStatus()
-      setChapters(await ipcApi.request('novel.list_chapters'))
+      const result = await ipcApi.request('novel.create_book', {
+        title: createTitle.trim(),
+        genre: createGenre.trim() || '都市',
+        language: 'zh',
+        targetChapters: Math.max(1, Number(createTargetChapters) || 200),
+        chapterWordCount: Math.max(100, Number(createWordCount) || 2000)
+      })
+      toast.success(t('novel.create_succeeded'))
+      setCreateTitle('')
+      setCreateGenre('')
+      await refreshBooks()
+      // 引擎的建书跑在后台（AI architect）；轮询直至 ready 再打开
+      const deadline = Date.now() + 120_000
+      let status = await ipcApi.request('novel.create_status', { bookId: result.id })
+      while (status.status === 'creating' && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3_000))
+        status = await ipcApi.request('novel.create_status', { bookId: result.id })
+      }
+      if (status.status === 'error' || status.status === 'missing') {
+        toast.error(status.error ?? t('novel.create_failed'))
+      } else {
+        await refreshBooks()
+        await openBook(result.id)
+      }
     } catch (err) {
-      logger.error('Failed to commit novel workspace', err as Error)
-      toast.error(t('novel.commit_failed'))
-      setError(String(err))
+      logger.error('Failed to create book', err as Error)
+      toast.error(String(err))
     } finally {
-      setCommitting(false)
+      setCreating(false)
     }
-  }, [commitMessage, refreshRepoStatus, t])
+  }, [createTitle, createGenre, createTargetChapters, createWordCount, refreshBooks, openBook, t])
 
-  const rollback = useCallback(async () => {
-    const target = rollbackTarget.trim()
-    if (!target || !status) return
-    if (!window.confirm(t('novel.rollback_confirm', { target }))) return
-    setRollingBack(true)
-    setError(null)
-    try {
-      await ipcApi.request('novel.git_rollback', { target })
-      setRollbackTarget('')
-      toast.success(t('novel.rollback_done'))
-      await refreshRepoStatus()
-      await refreshStatus()
-      setChapters(await ipcApi.request('novel.list_chapters'))
-    } catch (err) {
-      logger.error('Failed to roll back novel workspace', err as Error)
-      toast.error(t('novel.rollback_failed'))
-      setError(String(err))
-    } finally {
-      setRollingBack(false)
-    }
-  }, [rollbackTarget, refreshRepoStatus, refreshStatus, t])
-
-  const renderRepoBar = () => {
-    if (!repoStatus || !repoStatus.isGitRepo) return null
-    return (
-      <div className="flex shrink-0 items-center gap-2 border-b bg-muted/30 px-4 py-1.5 text-xs">
-        <GitBranch className="size-3.5 text-muted-foreground" />
-        <span className="font-medium font-mono">{repoStatus.branch}</span>
-        {repoStatus.shortSha && <span className="font-mono text-muted-foreground">@{repoStatus.shortSha}</span>}
-        {repoStatus.dirty ? (
-          <Badge variant="destructive">{t('novel.repo_dirty')}</Badge>
-        ) : (
-          <Badge variant="secondary">{t('novel.repo_clean')}</Badge>
-        )}
-        <span className="flex-1" />
-        <button
-          type="button"
-          onClick={() => void refreshRepoStatus()}
-          className="text-muted-foreground underline-offset-2 hover:underline"
-          title={t('novel.repo_refresh')}>
-          {t('novel.repo_refresh')}
-        </button>
-      </div>
-    )
-  }
-
-  const renderRepoSection = () => {
-    if (!repoStatus) return null
-    return (
-      <section className="mt-6 space-y-2.5 border-t pt-4">
-        <h2 className="flex items-center gap-2 font-semibold text-sm">
-          <GitBranch className="size-3.5" />
-          {t('novel.repo_heading')}
-        </h2>
-        <div className="rounded-md border p-3 text-xs">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium font-mono">{repoStatus.branch}</span>
-            {repoStatus.shortSha && <span className="font-mono text-muted-foreground">@{repoStatus.shortSha}</span>}
-            {repoStatus.commitMessage && (
-              <span className="max-w-72 truncate text-muted-foreground" title={repoStatus.commitMessage}>
-                {repoStatus.commitMessage}
-              </span>
-            )}
-            {repoStatus.dirty ? (
-              <Badge variant="destructive">{t('novel.repo_dirty')}</Badge>
-            ) : (
-              <Badge variant="secondary">{t('novel.repo_clean')}</Badge>
-            )}
-            {repoStatus.ahead !== undefined && repoStatus.ahead > 0 && (
-              <Badge variant="outline">
-                {t('novel.repo_ahead')} {repoStatus.ahead}
-              </Badge>
-            )}
-            {repoStatus.behind !== undefined && repoStatus.behind > 0 && (
-              <Badge variant="outline">
-                {t('novel.repo_behind')} {repoStatus.behind}
-              </Badge>
-            )}
-          </div>
-          {(repoStatus.modified?.length ?? 0) +
-            (repoStatus.deleted?.length ?? 0) +
-            (repoStatus.untracked?.length ?? 0) >
-            0 && (
-            <p className="mt-2 text-muted-foreground">
-              {t('novel.repo_changes')}: {t('novel.repo_modified')} {repoStatus.modified?.length ?? 0} ·{' '}
-              {t('novel.repo_deleted')} {repoStatus.deleted?.length ?? 0} · {t('novel.repo_untracked')}{' '}
-              {repoStatus.untracked?.length ?? 0}
-            </p>
-          )}
-          <div className="mt-2.5 flex items-center gap-2">
-            <input
-              type="text"
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void commitChanges()
-              }}
-              placeholder={t('novel.commit_placeholder')}
-              className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:border-primary"
-            />
-            <Button size="sm" onClick={() => void commitChanges()} disabled={committing || !commitMessage.trim()}>
-              {committing ? t('novel.commit_running') : t('novel.commit_button')}
+  const renderShelf = useMemo(
+    () => (
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h1 className="font-semibold text-xl">{t('novel.shelf_heading')}</h1>
+          <div className="flex gap-2">
+            <Button variant="ghost" size="icon" onClick={() => void refreshBooks()} aria-label={t('novel.refresh')}>
+              <RefreshCw className="size-4" />
             </Button>
-          </div>
-          <div className="mt-2.5 flex items-center gap-2 border-t pt-2.5">
-            <RotateCcw className="size-3.5 text-muted-foreground" />
-            <input
-              type="text"
-              value={rollbackTarget}
-              onChange={(event) => setRollbackTarget(event.target.value)}
-              placeholder={t('novel.rollback_placeholder')}
-              className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:border-primary"
-            />
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => void rollback()}
-              disabled={rollingBack || !rollbackTarget.trim()}>
-              {rollingBack ? t('novel.rollback_running') : t('novel.rollback_button')}
-            </Button>
-          </div>
-        </div>
-      </section>
-    )
-  }
-
-  const renderReviewView = () => {
-    if (!selectedId) {
-      return (
-        <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-          <ShieldCheck className="size-8 text-muted-foreground" />
-          <p className="text-muted-foreground text-sm">{t('novel.review_none_selected')}</p>
-        </div>
-      )
-    }
-    const passLabels: Record<string, string> = {
-      'novel-consistency-reviewer': 'Consistency',
-      'novel-foreshadow-reviewer': 'Foreshadow',
-      'novel-style-reviewer': 'Style'
-    }
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-5">
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <h1 className="font-semibold text-lg">{t('novel.review_heading')}</h1>
-          <span className="font-mono text-muted-foreground text-xs">{selectedId}</span>
-          <div className="ml-auto flex items-center gap-2">
-            {reviewModelId && (
-              <span className="max-w-48 truncate font-mono text-muted-foreground text-xs" title={reviewModelId}>
-                {t('novel.review_model')}: {reviewModelId}
-              </span>
-            )}
-            <Button size="sm" onClick={() => void runReview()} disabled={reviewRunning || !reviewModelId}>
-              <Play className="size-3.5" />
-              {reviewRunning ? t('novel.review_running') : t('novel.review_run')}
+            <Button onClick={openWorkspace}>
+              <FolderOpen className="size-4" /> {t('novel.open_workspace')}
             </Button>
           </div>
         </div>
 
-        {reviewRunning && (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
+        {booksLoading ? (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {[1, 2, 3].map((i) => (
+              <Skeleton key={i} className="h-32 rounded-xl" />
+            ))}
           </div>
-        )}
-
-        {!reviewRunning && reviewOutcome && (
-          <div className="space-y-5">
-            <section>
-              <h2 className="mb-1.5 font-semibold text-sm">{t('novel.review_passes')}</h2>
-              <div className="space-y-1.5">
-                {reviewOutcome.passes.map((pass) => (
-                  <div key={pass.reviewer} className="flex items-center gap-2 rounded-md border p-2.5 text-sm">
-                    <span className="font-medium">{passLabels[pass.reviewer] ?? pass.reviewer}</span>
-                    {pass.status === 'completed' ? (
-                      <Badge variant="secondary">{t('novel.review_completed')}</Badge>
-                    ) : (
-                      <Badge variant="destructive">{t('novel.review_failed')}</Badge>
-                    )}
-                    <span className="text-muted-foreground text-xs">
-                      {pass.findings.length} {t('novel.findings')}
-                    </span>
-                    {pass.error && <span className="ml-auto truncate text-error-foreground text-xs">{pass.error}</span>}
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            {reviewOutcome.gatePassed && reviewOutcome.recordFile && (
-              <p className="text-primary text-xs">
-                {t('novel.review_gate_passed')} — {reviewOutcome.recordFile}
-              </p>
-            )}
-            {!reviewOutcome.gatePassed && reviewOutcome.gateError && (
-              <p className="text-error-foreground text-xs">
-                {t('novel.review_gate_failed')}: {reviewOutcome.gateError}
-              </p>
-            )}
-
-            {reviewOutcome.passes.some((pass) => pass.findings.length > 0) && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.review_findings')}</h2>
-                <div className="space-y-1.5">
-                  {reviewOutcome.passes
-                    .flatMap((pass) => pass.findings)
-                    .map((finding) => (
-                      <div key={finding.id} className="rounded-md border p-2.5 text-xs">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="font-mono text-muted-foreground">{finding.id}</span>
-                          <Badge variant="outline">{finding.severity}</Badge>
-                          <Badge variant="secondary">{finding.resolution}</Badge>
-                          <span className="text-muted-foreground">{finding.reviewer}</span>
-                        </div>
-                        <p className="mt-1">{finding.summary}</p>
-                        {finding.rationale && (
-                          <p className="mt-1 text-muted-foreground/70 italic">{finding.rationale}</p>
-                        )}
-                      </div>
-                    ))}
-                </div>
-              </section>
-            )}
-
-            {reviewOutcome.consistency && (
-              <p className="text-muted-foreground text-xs">
-                {t('novel.review_consistency')}: {reviewOutcome.consistency.slice(0, 120)}
-              </p>
-            )}
-          </div>
-        )}
-
-        {!reviewRunning && !reviewOutcome && (
-          <p className="text-muted-foreground text-sm">{t('novel.review_none_selected')}</p>
-        )}
-
-        <div className="mt-6 flex items-center gap-3 border-t pt-4">
-          {finalizeResult && <span className="text-primary text-xs">{finalizeResult}</span>}
-          <div className="ml-auto flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void finalize('reviewed')}
-              disabled={finalizing || reviewRunning}>
-              {finalizing ? t('novel.review_finalizing') : t('novel.review_finalize')}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => void finalize('final')}
-              disabled={finalizing || reviewRunning}>
-              {finalizing ? t('novel.review_finalizing') : 'final'}
-            </Button>
-          </div>
-        </div>
-
-        {renderRepoSection()}
-      </div>
-    )
-  }
-
-  const selectedSummary = useMemo(() => chapters.find((c) => c.id === selectedId) ?? null, [chapters, selectedId])
-  const frontmatter = chapterRead?.frontmatter
-  const proseUnit = frontmatter?.countUnit ?? 'words'
-  const proseCount = chapterRead?.proseCount ?? sceneContext?.proseCount
-  const targetChars = frontmatter?.targetChars
-  const progress = useMemo(() => {
-    if (proseCount === undefined || !targetChars) return null
-    return Math.min(100, Math.round((proseCount / targetChars) * 100))
-  }, [proseCount, targetChars])
-
-  const renderSceneProse = (prose: string) =>
-    prose.split('\n').map((line, i) => (
-      <div key={i} className={line.trim() ? '' : 'h-2'}>
-        {line}
-      </div>
-    ))
-
-  /** Read-only state view: characters/world/foreshadow/timeline/pov as of a chapter. */
-  const renderStateView = () => {
-    const state = novelState
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-5">
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          <h1 className="font-semibold text-lg">{t('novel.state_heading')}</h1>
-          {chapters.length > 1 && (
-            <div className="ml-auto flex items-center gap-1.5 text-xs">
-              <span className="text-muted-foreground">{t('novel.state_as_of')}</span>
-              <button
-                type="button"
-                onClick={() => setAsOfChapter(0)}
-                className={`rounded border px-2 py-0.5 transition-colors ${
-                  asOfChapter === 0 ? 'bg-accent font-medium' : 'hover:bg-accent'
-                }`}>
-                {t('novel.state_current')}
-              </button>
-              {chapters.map((chapter) => (
-                <button
-                  key={chapter.id}
-                  type="button"
-                  onClick={() => setAsOfChapter(chapter.chapter ?? 0)}
-                  className={`rounded border px-2 py-0.5 font-mono transition-colors ${
-                    asOfChapter === chapter.chapter ? 'bg-accent font-medium' : 'hover:bg-accent'
-                  }`}>
-                  c{String(chapter.chapter ?? 0).padStart(3, '0')}
-                </button>
-              ))}
+        ) : books.length === 0 ? (
+          <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed py-16 text-center">
+            <BookOpen className="size-12 text-muted-foreground" />
+            <div className="text-muted-foreground">{t('novel.shelf_empty')}</div>
+            <div className="flex gap-2">
+              <Button onClick={openWorkspace}>
+                <FolderOpen className="size-4" /> {t('novel.open_workspace')}
+              </Button>
             </div>
-          )}
-        </div>
-
-        {stateLoading && !state ? (
-          <div className="space-y-2">
-            <Skeleton className="h-20 w-full" />
-            <Skeleton className="h-20 w-full" />
-          </div>
-        ) : state && (state.characters.length > 0 || state.foreshadow.length > 0) ? (
-          <div className="space-y-5">
-            {state.world.name && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.state_world')}</h2>
-                <div className="rounded-md border p-3 text-sm">
-                  <p className="font-medium">
-                    {state.world.name}
-                    {state.world.era ? ` (${state.world.era})` : ''}
-                  </p>
-                  {state.world.premise && <p className="mt-1 text-muted-foreground text-xs">{state.world.premise}</p>}
-                  {state.world.rules && state.world.rules.length > 0 && (
-                    <ul className="mt-2 list-disc space-y-0.5 pl-4 text-muted-foreground text-xs">
-                      {state.world.rules.map((rule, i) => (
-                        <li key={i}>{rule}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </section>
-            )}
-
-            {state.characters.length > 0 && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.state_characters')}</h2>
-                <div className="space-y-2">
-                  {state.characters.map((character) => (
-                    <details
-                      key={character.id}
-                      className="rounded-md border p-3 text-sm"
-                      open={state.characters.length <= 2}>
-                      <summary className="flex cursor-pointer flex-wrap items-center gap-2 font-medium">
-                        <span>{character.name}</span>
-                        <span className="font-mono text-muted-foreground text-xs">{character.id}</span>
-                        {character.current.status && <Badge variant="secondary">{character.current.status}</Badge>}
-                      </summary>
-                      <div className="mt-2 space-y-1.5 text-muted-foreground text-xs">
-                        {character.current.location && <p>📍 {character.current.location}</p>}
-                        {character.current.psychology && <p>{character.current.psychology}</p>}
-                        {character.current.knowledge && character.current.knowledge.length > 0 && (
-                          <ul className="list-disc space-y-0.5 pl-4">
-                            {character.current.knowledge.map((item, i) => (
-                              <li key={i}>{item}</li>
-                            ))}
-                          </ul>
-                        )}
-                        {character.current.inventory && character.current.inventory.length > 0 && (
-                          <p>
-                            <span className="font-medium">🎒</span> {character.current.inventory.join(' · ')}
-                          </p>
-                        )}
-                        {character.current.relationships && Object.keys(character.current.relationships).length > 0 && (
-                          <div>
-                            <span className="font-medium">↔</span>{' '}
-                            {Object.entries(character.current.relationships)
-                              .map(([id, value]) => `${id}: ${value}`)
-                              .join(' · ')}
-                          </div>
-                        )}
-                        {character.current.notes && (
-                          <p className="text-muted-foreground/70 italic">{character.current.notes}</p>
-                        )}
-                      </div>
-                    </details>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {state.foreshadow.length > 0 && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.state_foreshadow')}</h2>
-                <div className="space-y-1.5">
-                  {state.foreshadow.map((entry) => (
-                    <div key={entry.id} className="rounded-md border p-3 text-xs">
-                      <div className="flex items-center gap-2">
-                        <Badge variant="outline" className="font-mono">
-                          {entry.id}
-                        </Badge>
-                        {entry.planted_at && (
-                          <span className="font-mono text-muted-foreground">planted {entry.planted_at}</span>
-                        )}
-                      </div>
-                      {entry.description && <p className="mt-1.5">{entry.description}</p>}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {state.timeline.length > 0 && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.state_timeline')}</h2>
-                <ul className="space-y-1 rounded-md border p-3 text-xs">
-                  {state.timeline.map((event) => (
-                    <li key={event.id} className="flex items-start gap-2">
-                      <span className="mt-0.5 shrink-0 font-mono text-muted-foreground">{event.chapter}</span>
-                      <span>{event.description}</span>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-
-            {state.pov && state.pov.viewpoint && (
-              <section>
-                <h2 className="mb-1.5 font-semibold text-sm">{t('novel.state_pov')}</h2>
-                <div className="rounded-md border p-3 text-xs">
-                  <p>
-                    <span className="font-medium">{state.pov.viewpoint}</span>
-                    {state.pov.tense ? ` · ${state.pov.tense}` : ''}
-                  </p>
-                  {state.pov.notes && <p className="mt-1 text-muted-foreground">{state.pov.notes}</p>}
-                </div>
-              </section>
-            )}
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center gap-2 p-8 text-center">
-            <Flag className="size-8 text-muted-foreground" />
-            <p className="max-w-md text-muted-foreground text-sm">{t('novel.state_none')}</p>
-          </div>
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div data-ui="novel.view" className="flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden">
-      {/* Workspace header */}
-      <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
-        <BookOpen className="size-4 shrink-0 text-primary" />
-        <span className="truncate font-medium text-sm">{status ? status.path : t('novel.no_workspace')}</span>
-        {status && status.specVersion && (
-          <Badge variant="outline" className="shrink-0">
-            spec v{status.specVersion}
-          </Badge>
-        )}
-        <span className="flex-1" />
-        {status ? (
-          <Button variant="outline" size="sm" onClick={() => void closeWorkspace()}>
-            <X className="size-3.5" />
-            {t('novel.close_workspace')}
-          </Button>
-        ) : (
-          <Button size="sm" onClick={() => void openWorkspace()}>
-            <FolderOpen className="size-3.5" />
-            {t('novel.open_workspace')}
-          </Button>
-        )}
-      </div>
-
-      {renderRepoBar()}
-
-      {error && (
-        <div
-          role="alert"
-          className="shrink-0 border-error-border border-b bg-error-subtle px-4 py-2 text-error-subtle-foreground text-xs">
-          {error}
-        </div>
-      )}
-
-      {!status ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
-          <BookOpen className="size-10 text-muted-foreground" />
-          <p className="max-w-md text-muted-foreground text-sm">{t('novel.empty_description')}</p>
-          <Button onClick={() => void openWorkspace()}>
-            <FolderOpen className="size-3.5" />
-            {t('novel.open_workspace')}
-          </Button>
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-row overflow-hidden">
-          {/* Chapter list */}
-          <aside className="w-64 shrink-0 overflow-y-auto border-r">
-            {chapters.length === 0 && busy && (
-              <div className="space-y-2 p-3">
-                <Skeleton className="h-8 w-full" />
-                <Skeleton className="h-8 w-full" />
-              </div>
-            )}
-            {chapters.map((chapter) => (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {books.map((b) => (
               <button
-                key={chapter.id}
+                key={b.id}
                 type="button"
-                onClick={() => void selectChapter(chapter.id)}
-                className={`flex w-full flex-col gap-0.5 border-b px-3 py-2.5 text-left transition-colors hover:bg-accent ${
-                  chapter.id === selectedId ? 'bg-accent' : ''
-                }`}>
-                <span className="flex items-center gap-2 font-medium text-sm">
-                  <span className="font-mono text-muted-foreground text-xs">{chapter.id}</span>
-                  {chapter.title && <span className="min-w-0 truncate">{chapter.title}</span>}
-                </span>
-                <span className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground text-xs">
-                  {chapter.status && <Badge variant="secondary">{chapter.status}</Badge>}
-                  <span>
-                    {chapter.proseCount ?? '–'}/{chapter.targetChars ?? '–'}
-                  </span>
-                  <span>
-                    {chapter.sceneCount} {t('novel.scenes')}
-                  </span>
-                </span>
+                className="group flex cursor-pointer flex-col gap-2 rounded-2xl border p-4 text-left transition hover:border-primary hover:shadow-sm"
+                onClick={() => void openBook(b.id)}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="line-clamp-2 font-semibold">{b.title}</div>
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground transition group-hover:text-primary" />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  <Badge variant="secondary">{b.platform || b.genre}</Badge>
+                  <Badge variant="secondary">{b.genre}</Badge>
+                  <Badge variant="secondary">{b.chaptersWritten ?? b.chapterCount} 章</Badge>
+                  <Badge variant="secondary">{formatWords(b.totalWords)}</Badge>
+                </div>
+                <div className="text-muted-foreground text-xs">
+                  {t('novel.chapter_progress', {
+                    written: b.chaptersWritten ?? b.chapterCount,
+                    target: b.targetChapters
+                  })}
+                </div>
               </button>
             ))}
-          </aside>
+          </div>
+        )}
 
-          {/* Detail */}
-          <main className="flex min-w-0 flex-1 flex-col">
-            {/* Tab bar */}
-            <div className="flex shrink-0 items-center gap-1 border-b px-4 py-1.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setTab('chapter')}
-                className={`rounded px-2 py-1 transition-colors ${tab === 'chapter' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
-                {t('novel.tab_chapter')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('state')}
-                className={`rounded px-2 py-1 transition-colors ${tab === 'state' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
-                {t('novel.tab_state')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab('review')}
-                className={`rounded px-2 py-1 transition-colors ${tab === 'review' ? 'bg-accent font-medium' : 'text-muted-foreground hover:bg-accent'}`}>
-                {t('novel.tab_review')}
-              </button>
+        {/* 新建小说向导 */}
+        <div className="rounded-2xl border p-4">
+          <div className="mb-3 flex items-center gap-2 font-semibold">
+            <Wand2 className="size-4" /> {t('novel.create_heading')}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-muted-foreground text-xs">{t('novel.create_title')}</label>
+              <Input
+                value={createTitle}
+                onChange={(e) => setCreateTitle(e.target.value)}
+                placeholder={t('novel.create_title_placeholder')}
+              />
             </div>
-
-            <div className="min-h-0 flex-1 overflow-y-auto">
-              {tab === 'state' ? (
-                renderStateView()
-              ) : tab === 'review' ? (
-                renderReviewView()
-              ) : !selectedSummary || !chapterRead ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-                  <Flag className="size-8 text-muted-foreground" />
-                  <p className="text-muted-foreground text-sm">{t('novel.select_chapter')}</p>
-                </div>
-              ) : (
-                <div className="mx-auto max-w-3xl px-6 py-5">
-                  {/* Chapter header */}
-                  <div className="mb-4">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-muted-foreground text-xs">{selectedSummary.id}</span>
-                      {frontmatter?.title && <h1 className="font-semibold text-lg">{frontmatter.title}</h1>}
-                      {frontmatter?.status && <Badge variant="secondary">{frontmatter.status}</Badge>}
-                    </div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-muted-foreground text-xs">
-                      {proseCount !== undefined && (
-                        <span>
-                          {proseCount} {proseUnit === 'han_chars' ? t('novel.han_chars') : t('novel.words')}
-                        </span>
-                      )}
-                      {targetChars !== undefined && (
-                        <span>
-                          {t('novel.target')} {targetChars}
-                        </span>
-                      )}
-                      {progress !== null && (
-                        <span>
-                          {t('novel.progress')}: {progress}%
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Scene outline */}
-                  {sceneContext && sceneContext.scenes.length > 0 && (
-                    <div className="mb-5 space-y-2 rounded-md border bg-muted/30 p-3">
-                      {sceneContext.scenes.map((scene) => (
-                        <div key={scene.plan.id} className="flex items-start gap-2 text-sm">
-                          <Badge variant="outline" className="mt-0.5 shrink-0 font-mono">
-                            {scene.marker}
-                          </Badge>
-                          <div className="min-w-0">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="font-medium">{scene.plan.type}</span>
-                              {scene.plan.pov && (
-                                <span className="text-muted-foreground text-xs">POV {scene.plan.pov}</span>
-                              )}
-                              {scene.plan.status && <Badge variant="secondary">{scene.plan.status}</Badge>}
-                            </div>
-                            {scene.plan.goal && <p className="text-muted-foreground text-xs">{scene.plan.goal}</p>}
-                            <details className="mt-1">
-                              <summary className="cursor-pointer text-primary text-xs">
-                                {t('novel.scene_prose')} ({scene.prose.length})
-                              </summary>
-                              <div className="mt-1.5 rounded-md border bg-background p-3 font-mono text-xs leading-relaxed">
-                                {renderSceneProse(scene.prose)}
-                              </div>
-                            </details>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* Chapter body (read-only) */}
-                  <article className="whitespace-pre-wrap text-sm leading-relaxed">{chapterRead.body}</article>
-
-                  {/* Reviews */}
-                  {reviews.length > 0 && (
-                    <section className="mt-8 space-y-2 border-t pt-4">
-                      <h2 className="font-semibold text-sm">{t('novel.reviews')}</h2>
-                      {reviews.map((review) => (
-                        <div key={review.file} className="rounded-md border p-3 text-xs">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="font-mono text-muted-foreground">{review.file}</span>
-                            {review.status && <Badge variant="outline">{review.status}</Badge>}
-                            <span className="text-muted-foreground">
-                              {review.reviewerCount} {t('novel.reviewers')} · {review.findingCount}{' '}
-                              {t('novel.findings')}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </section>
-                  )}
-                </div>
-              )}
+            <div>
+              <label className="mb-1 block text-muted-foreground text-xs">{t('novel.create_genre')}</label>
+              <Input
+                value={createGenre}
+                onChange={(e) => setCreateGenre(e.target.value)}
+                placeholder={t('novel.create_genre_placeholder')}
+              />
             </div>
-          </main>
+            <div>
+              <label className="mb-1 block text-muted-foreground text-xs">{t('novel.create_chapters')}</label>
+              <Input
+                type="number"
+                value={createTargetChapters}
+                onChange={(e) => setCreateTargetChapters(e.target.value)}
+                min={1}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-muted-foreground text-xs">{t('novel.create_wordcount')}</label>
+              <Input
+                type="number"
+                value={createWordCount}
+                onChange={(e) => setCreateWordCount(e.target.value)}
+                min={100}
+              />
+            </div>
+          </div>
+          <Button className="mt-3" onClick={() => void createBook()} disabled={creating}>
+            {creating ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+            {t('novel.create_button')}
+          </Button>
+          <p className="mt-2 text-muted-foreground text-xs">{t('novel.create_hint')}</p>
         </div>
-      )}
-    </div>
+      </div>
+    ),
+    [
+      books,
+      booksLoading,
+      openWorkspace,
+      refreshBooks,
+      openBook,
+      creating,
+      createBook,
+      createTitle,
+      createGenre,
+      createTargetChapters,
+      createWordCount,
+      t
+    ]
   )
+
+  const renderBook = useMemo(() => {
+    if (!book) return null
+    const selectedMeta = chapters.find((c) => c.number === selectedChapter) ?? null
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={backToShelf} aria-label={t('novel.back')}>
+            <ArrowLeft className="size-4" />
+          </Button>
+          <div className="flex-1">
+            <h1 className="font-semibold text-xl">{book.title}</h1>
+            <div className="flex flex-wrap gap-1.5 text-muted-foreground text-xs">
+              <Badge variant="secondary">{book.platform || book.genre}</Badge>
+              <Badge variant="secondary">{book.genre}</Badge>
+              <Badge variant="secondary">
+                {t('novel.chapter_progress', {
+                  written: book.chaptersWritten ?? book.chapterCount,
+                  target: book.targetChapters
+                })}
+              </Badge>
+              <Badge variant="secondary">{formatWords(book.totalWords)}</Badge>
+            </div>
+          </div>
+          <Button onClick={() => void runAction('write_next')} disabled={actionBusy}>
+            {actionBusy && actionLabel === 'write_next' ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Sparkles className="size-4" />
+            )}
+            {t('novel.write_next')}
+          </Button>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+          {/* 目录 */}
+          <div className="rounded-2xl border p-2">
+            <div className="mb-1 flex items-center justify-between px-2 py-1 text-muted-foreground text-xs">
+              <span>{t('novel.toc_heading')}</span>
+              <span>{chapters.length} 章</span>
+            </div>
+            {chapters.length === 0 ? (
+              <div className="px-2 py-6 text-center text-muted-foreground text-sm">{t('novel.toc_empty')}</div>
+            ) : (
+              chapters.map((c) => {
+                const st = statusOf(c.status)
+                return (
+                  <button
+                    key={c.number}
+                    type="button"
+                    className={`flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition hover:bg-accent ${
+                      selectedChapter === c.number ? 'bg-accent' : ''
+                    }`}
+                    onClick={() => void selectChapter(book.id, c.number)}>
+                    <span className="truncate">
+                      <span className="text-muted-foreground">#{c.number}</span>{' '}
+                      <span className="font-medium">{c.title}</span>
+                    </span>
+                    <Badge variant={st.tone} className="shrink-0">
+                      {t(st.label)}
+                    </Badge>
+                  </button>
+                )
+              })
+            )}
+            <div className="mt-2 border-t pt-2">
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => void runAction('write_next')}
+                disabled={actionBusy}>
+                <PenLine className="size-4" /> {t('novel.write_next')}
+              </Button>
+            </div>
+          </div>
+
+          {/* 章节阅读 */}
+          <div className="rounded-2xl border p-6">
+            {!chapterDetail || !selectedMeta ? (
+              <div className="py-16 text-center text-muted-foreground">{t('novel.select_chapter_hint')}</div>
+            ) : (
+              <div className="prose prose-sm max-w-none">
+                <div className="mb-4 flex items-center justify-between gap-2">
+                  <h2 className="font-semibold text-lg">
+                    #{selectedMeta.number} {selectedMeta.title}
+                  </h2>
+                  <Badge variant={statusOf(selectedMeta.status).tone}>{t(statusOf(selectedMeta.status).label)}</Badge>
+                </div>
+                <div className="mb-3 flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void runAction('audit', selectedMeta.number)}
+                    disabled={actionBusy}>
+                    {t('novel.run_audit')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void runAction('revise', selectedMeta.number)}
+                    disabled={actionBusy}>
+                    {t('novel.run_revise')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void approveChapter(selectedMeta.number)}
+                    disabled={actionBusy}>
+                    {t('novel.approve')}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void rejectChapter(selectedMeta.number)}
+                    disabled={actionBusy}>
+                    {t('novel.reject')}
+                  </Button>
+                </div>
+                <div className="whitespace-pre-wrap font-serif text-[15px] leading-7">{chapterDetail.content}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }, [
+    book,
+    chapters,
+    chapterDetail,
+    selectedChapter,
+    actionBusy,
+    actionLabel,
+    runAction,
+    approveChapter,
+    rejectChapter,
+    backToShelf,
+    selectChapter,
+    t
+  ])
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (!open) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-4">
+        <BookOpen className="size-12 text-muted-foreground" />
+        <div className="font-medium text-lg">{t('novel.empty_heading')}</div>
+        <div className="max-w-md text-center text-muted-foreground text-sm">{t('novel.empty_description')}</div>
+        <Button onClick={openWorkspace}>
+          <FolderOpen className="size-4" /> {t('novel.open_workspace')}
+        </Button>
+      </div>
+    )
+  }
+
+  return <div className="h-full overflow-y-auto p-6">{book ? renderBook : renderShelf}</div>
+}
+
+function formatWords(words: number): string {
+  if (words >= 10000) return `${(words / 10000).toFixed(1)} 万字`
+  return `${words} 字`
 }
 
 export default NovelPage

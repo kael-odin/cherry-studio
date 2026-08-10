@@ -158,6 +158,9 @@ export function buildPathRegistry() {
     'feature.notes.data': path.join(appUserDataData, 'Notes'),
     'feature.knowledgebase.data': path.join(appUserDataData, 'KnowledgeBase'),
 
+    // Novel workspace — InkOS project root (one novel = one git repository)
+    'feature.novel.workspace': path.join(appUserDataData, 'NovelWorkspace'),
+
     // OCR
     'feature.ocr.tesseract': path.join(appUserData, 'tesseract'),
     // Local OCR model files (PaddleOCR / ppu-paddle-ocr, downloaded on demand)

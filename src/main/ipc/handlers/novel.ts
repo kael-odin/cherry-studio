@@ -3,26 +3,38 @@ import type { novelRequestSchemas } from '@shared/ipc/schemas/novel'
 import type { IpcHandlersFor } from '@shared/ipc/types'
 
 export const novelHandlers: IpcHandlersFor<typeof novelRequestSchemas> = {
+  'novel.open_workspace': async (input) => application.get('NovelService').openWorkspace(input.root),
+  'novel.close_workspace': async () => {
+    application.get('NovelService').closeWorkspace()
+  },
   'novel.get_status': async () => {
     const service = application.get('NovelService')
     const workspace = service.getWorkspace()
     if (!workspace) {
       return null
     }
-    return service.workspaceStatus()
+    return service.projectStatus()
   },
-  'novel.open_workspace': async (input) => application.get('NovelService').openWorkspace(input.root),
-  'novel.close_workspace': async () => {
-    application.get('NovelService').closeWorkspace()
-  },
-  'novel.list_chapters': async () => application.get('NovelService').listChapters(),
-  'novel.read_chapter': async (input) => application.get('NovelService').readChapter(input.chapterId),
-  'novel.scene_context': async (input) => application.get('NovelService').sceneContext(input.chapterId),
-  'novel.list_reviews': async (input) => application.get('NovelService').listReviews(input.chapterId),
-  'novel.state_read': async (input) => application.get('NovelService').stateRead(input.asOfChapter ?? 0),
-  'novel.run_review': async (input) => application.get('NovelService').runReview(input.chapterId, input.modelId),
-  'novel.finalize': async (input) => application.get('NovelService').finalizeChapter(input.chapterId, input.status),
-  'novel.repo_status': async () => application.get('NovelService').repoStatus(),
-  'novel.git_commit': async (input) => application.get('NovelService').commitChanges(input.message),
-  'novel.git_rollback': async (input) => application.get('NovelService').rollback(input.target)
+  'novel.list_books': async () => application.get('NovelService').listBooks(),
+  'novel.create_book': async (input) => application.get('NovelService').createBook(input),
+  'novel.create_status': async (input) => application.get('NovelService').createStatus(input.bookId),
+  'novel.get_book': async (input) => application.get('NovelService').getBook(input.bookId),
+  'novel.list_chapters': async (input) => application.get('NovelService').listChapters(input.bookId),
+  'novel.get_chapter': async (input) => application.get('NovelService').getChapter(input.bookId, input.chapterNumber),
+  'novel.save_chapter': async (input) =>
+    application.get('NovelService').saveChapter(input.bookId, input.chapterNumber, input.content),
+  'novel.write_next': async (input) => application.get('NovelService').writeNext(input.bookId),
+  'novel.audit_chapter': async (input) =>
+    application.get('NovelService').auditChapter(input.bookId, input.chapterNumber),
+  'novel.revise_chapter': async (input) =>
+    application.get('NovelService').reviseChapter(input.bookId, input.chapterNumber, input.mode, input.brief),
+  'novel.approve_chapter': async (input) =>
+    application.get('NovelService').approveChapter(input.bookId, input.chapterNumber, input.reason),
+  'novel.reject_chapter': async (input) =>
+    application.get('NovelService').rejectChapter(input.bookId, input.chapterNumber, input.reason),
+  'novel.engine_error': async () => {
+    const service = application.get('NovelService')
+    const error = service.lastEngineError()
+    return error ? { code: error.code, message: error.message } : null
+  }
 }
