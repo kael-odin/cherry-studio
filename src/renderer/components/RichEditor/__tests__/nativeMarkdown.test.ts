@@ -165,6 +165,54 @@ describe('native markdown round-trip matrix', () => {
   })
 })
 
+describe('novel-spec scene boundary markers', () => {
+  // `<!-- scene:sNN -->` is structural metadata in novel-spec (SPEC.md "Scene-sized
+  // generation"): markers must round-trip byte-exact, never HTML-escaped
+  // (`&lt;!-- scene:s01 --&gt;`), never merged into adjacent prose.
+  it('parses a scene marker into a novelSceneBoundary node', () => {
+    const top = parse('<!-- scene:s01 -->')[0]
+    expect(top?.type).toBe('novelSceneBoundary')
+    expect(top?.attrs?.sceneId).toBe('s01')
+  })
+
+  it('round-trips a marker byte-exact, never escaped', () => {
+    expect(roundTrip('<!-- scene:s01 -->')).toBe('<!-- scene:s01 -->')
+    expect(roundTrip('<!-- scene:s01 -->')).not.toContain('&lt;')
+    expect(roundTrip('<!-- scene:s01 -->')).not.toContain('&gt;')
+  })
+
+  it('keeps one marker per planned scene across a chapter', () => {
+    const chapter = ['<!-- scene:s01 -->', '<!-- scene:s02 -->', '<!-- scene:s03 -->']
+    const out = roundTrip(chapter.join('\n\n'))
+    for (const marker of chapter) {
+      expect(out).toContain(marker)
+    }
+    expect(out.match(/<!-- scene:/g)).toHaveLength(3)
+  })
+
+  it('keeps markers before, between, and after Chinese prose', () => {
+    const src = '<!-- scene:s01 -->\n\n清晨的雨。\n\n<!-- scene:s02 -->\n\n她把信折好。'
+    expect(roundTrip(src)).toBe('<!-- scene:s01 -->\n\n清晨的雨。\n\n<!-- scene:s02 -->\n\n她把信折好。')
+  })
+
+  it('round-trips a full chapter: front matter + markers + prose', () => {
+    const src = '---\ntitle: 第一章\n---\n\n<!-- scene:s01 -->\n\n正文。\n\n<!-- scene:s02 -->\n\n更多正文。'
+    const out = roundTrip(src)
+    expect(out).toContain('title: 第一章')
+    expect(out).toContain('<!-- scene:s01 -->')
+    expect(out).toContain('<!-- scene:s02 -->')
+    expect(out).toContain('正文。')
+    expect(out).toContain('更多正文。')
+  })
+
+  it('does not hijack non-scene comments', () => {
+    // HTML comments that are not novel-spec markers must remain text (current
+    // behavior): the tokenizer only matches the exact marker contract.
+    const top = parse('<!-- a plain note -->')[0]
+    expect(top?.type).not.toBe('novelSceneBoundary')
+  })
+})
+
 describe('jump-to-line resolver', () => {
   it('strips markdown markers when normalizing a source line', () => {
     expect(normalizeMarkdownLine('## A heading')).toBe('A heading')

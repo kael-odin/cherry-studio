@@ -17,6 +17,7 @@ import { EnhancedImage } from './extensions/enhancedImage'
 import { EnhancedLink, type EnhancedLinkOptions } from './extensions/enhancedLink'
 import { EnhancedMath } from './extensions/enhancedMath'
 import { MarkdownTable } from './extensions/markdownTable'
+import { NovelSceneBoundary } from './extensions/novelSceneBoundary'
 import { Placeholder } from './extensions/placeholder'
 import { YamlFrontMatter } from './extensions/yamlFrontMatter'
 
@@ -124,6 +125,7 @@ export const createRichEditorExtensions = (options: CreateRichEditorExtensionsOp
       includeChildren: false
     }),
     YamlFrontMatter,
+    NovelSceneBoundary,
     Mention.configure({
       HTMLAttributes: {
         class: 'mention'
