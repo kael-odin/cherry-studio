@@ -51,4 +51,40 @@ describe.skipIf(!engineAvailable)('InkEngineClient against the real engine', () 
       engine.stop()
     }
   }, 90_000)
+
+  it('round-trips the sample book (灯塔守夜人) with its three chapters', async () => {
+    const engine = new InkEngineClient(process.execPath, ENGINE_ENTRY, PROJECT_ROOT, pickPort())
+    try {
+      await engine.start()
+
+      // Book on the shelf with 3 chapters written.
+      const list = (await engine.request('GET', '/api/v1/books')) as {
+        books: Array<{ id: string; title: string; chaptersWritten: number }>
+      }
+      const sample = list.books.find((b) => b.id === 'lighthouse-keeper')
+      expect(sample).toBeTruthy()
+      expect(sample?.title).toBe('灯塔守夜人')
+      expect(sample?.chaptersWritten).toBe(3)
+
+      // Chapter list folds into the book detail: 3 chapters, next is #4.
+      const detail = (await engine.request('GET', '/api/v1/books/lighthouse-keeper')) as {
+        book: { title: string }
+        chapters: unknown[]
+        nextChapter: number
+      }
+      expect(detail.book.title).toBe('灯塔守夜人')
+      expect(detail.chapters).toHaveLength(3)
+      expect(detail.nextChapter).toBe(4)
+
+      // Chapter 3 content round-trips.
+      const chapter = (await engine.request('GET', '/api/v1/books/lighthouse-keeper/chapters/3')) as {
+        chapterNumber: number
+        content: string
+      }
+      expect(chapter.chapterNumber).toBe(3)
+      expect(chapter.content).toContain('潮汐')
+    } finally {
+      engine.stop()
+    }
+  }, 90_000)
 })

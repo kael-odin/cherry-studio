@@ -4,6 +4,7 @@ import type { IpcHandlersFor } from '@shared/ipc/types'
 
 export const novelHandlers: IpcHandlersFor<typeof novelRequestSchemas> = {
   'novel.open_workspace': async (input) => application.get('NovelService').openWorkspace(input.root),
+  'novel.init_workspace': async () => application.get('NovelService').initWorkspace(),
   'novel.close_workspace': async () => {
     application.get('NovelService').closeWorkspace()
   },

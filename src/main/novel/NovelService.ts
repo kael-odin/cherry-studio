@@ -1,10 +1,19 @@
 import { existsSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
+import { application } from '@application'
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
 
 import { InkEngineClient, NotFoundError, pickPort } from './inkEngineClient'
+import {
+  SAMPLE_BOOK_CONFIG,
+  SAMPLE_BOOK_ID,
+  SAMPLE_CHAPTER_INDEX,
+  SAMPLE_CHAPTERS,
+  SAMPLE_PROJECT_INKOS_JSON
+} from './sampleSeed'
 
 const logger = loggerService.withContext('NovelService')
 
@@ -14,28 +23,21 @@ export interface InkApiError {
   message: string
 }
 
-// ── InkOS contracts (mirrors packages/studio/src/shared/contracts.ts) ──────
+// ── InkOS contracts (mirrors the live API wire format) ────────────────────
 
 export interface InkBookSummary {
   id: string
   title: string
-  status: string
   platform: string
   genre: string
+  status: string
   targetChapters: number
-  chapters: number
-  chapterCount: number
-  lastChapterNumber: number
-  totalWords: number
-  approvedChapters: number
-  pendingReview: number
-  pendingReviewChapters: number
-  failedReview: number
-  failedChapters: number
-  recentRunStatus?: string | null
+  chapterWordCount: number
+  language?: 'zh' | 'en' | null
+  createdAt: string
   updatedAt: string
-  /** `nextChapterNumber - 1` — present on the wire list summary. */
-  chaptersWritten?: number
+  /** `nextChapterNumber - 1` — chapters actually on disk. */
+  chaptersWritten: number
 }
 
 export interface InkChapterSummary {
@@ -43,12 +45,11 @@ export interface InkChapterSummary {
   title: string
   status: string
   wordCount: number
-  auditIssueCount: number
+  createdAt: string
   updatedAt: string
-  fileName: string | null
   auditIssues: string[]
   reviewNote?: string
-  createdAt: string
+  lengthWarnings?: string[]
 }
 
 export interface InkChapterDetail {
@@ -131,6 +132,20 @@ export class NovelService extends BaseService {
   /** Last engine error (cleared on success), for the renderer's error banner. */
   lastEngineError(): InkApiError | null {
     return this.lastError
+  }
+
+  /**
+   * 一键初始化示例工作区：在 feature.novel.workspace 下生成一个 InkOS 项目
+   * （inkos.json + 示例小说《灯塔守夜人》三章），然后打开它。
+   * 已存在项目时直接打开，不覆盖用户数据。
+   */
+  async initWorkspace(): Promise<string> {
+    const root = application.getPath('feature.novel.workspace')
+    if (!isInkProject(root)) {
+      await seedSampleWorkspace(root)
+      logger.info(`Novel sample workspace seeded: ${root}`)
+    }
+    return this.openWorkspace(root)
   }
 
   /** InkOS project status (config) for the open workspace. */
@@ -301,4 +316,18 @@ function inkosEntry(): string {
 /** True when the path is an InkOS project root (has inkos.json). */
 function isInkProject(root: string): boolean {
   return existsSync(path.join(root, 'inkos.json'))
+}
+
+/** Write the sample InkOS project (project config + sample book) into `root`. */
+async function seedSampleWorkspace(root: string): Promise<void> {
+  const bookDir = path.join(root, 'books', SAMPLE_BOOK_ID)
+  const chaptersDir = path.join(bookDir, 'chapters')
+  await mkdir(chaptersDir, { recursive: true })
+  await writeFile(path.join(root, 'inkos.json'), JSON.stringify(SAMPLE_PROJECT_INKOS_JSON, null, 2), 'utf-8')
+  await writeFile(path.join(root, '.gitignore'), '.env\nnode_modules/\n.DS_Store\n', 'utf-8')
+  await writeFile(path.join(bookDir, 'book.json'), JSON.stringify(SAMPLE_BOOK_CONFIG, null, 2), 'utf-8')
+  await writeFile(path.join(chaptersDir, 'index.json'), JSON.stringify(SAMPLE_CHAPTER_INDEX, null, 2), 'utf-8')
+  for (const chapter of SAMPLE_CHAPTERS) {
+    await writeFile(path.join(chaptersDir, chapter.filename), chapter.content, 'utf-8')
+  }
 }

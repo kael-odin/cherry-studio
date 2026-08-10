@@ -224,6 +224,21 @@ function NovelPage() {
     }
   }, [refreshBooks])
 
+  // ── 初始化：一键生成示例工作区（首次使用） ──
+  const initWorkspace = useCallback(async () => {
+    setLoading(true)
+    try {
+      await ipcApi.request('novel.init_workspace')
+      setOpen(true)
+      await refreshBooks()
+    } catch (err) {
+      logger.error('Failed to init workspace', err as Error)
+      toast.error(String(err))
+    } finally {
+      setLoading(false)
+    }
+  }, [refreshBooks])
+
   // ── 首次挂载：自动打开上次工作区 ──
   useEffect(() => {
     void (async () => {
@@ -305,7 +320,10 @@ function NovelPage() {
             <BookOpen className="size-12 text-muted-foreground" />
             <div className="text-muted-foreground">{t('novel.shelf_empty')}</div>
             <div className="flex gap-2">
-              <Button onClick={openWorkspace}>
+              <Button onClick={() => void initWorkspace()}>
+                <Sparkles className="size-4" /> {t('novel.init_workspace')}
+              </Button>
+              <Button variant="outline" onClick={openWorkspace}>
                 <FolderOpen className="size-4" /> {t('novel.open_workspace')}
               </Button>
             </div>
@@ -325,12 +343,11 @@ function NovelPage() {
                 <div className="flex flex-wrap gap-1.5">
                   <Badge variant="secondary">{b.platform || b.genre}</Badge>
                   <Badge variant="secondary">{b.genre}</Badge>
-                  <Badge variant="secondary">{b.chaptersWritten ?? b.chapterCount} 章</Badge>
-                  <Badge variant="secondary">{formatWords(b.totalWords)}</Badge>
+                  <Badge variant="secondary">{b.chaptersWritten} 章</Badge>
                 </div>
                 <div className="text-muted-foreground text-xs">
                   {t('novel.chapter_progress', {
-                    written: b.chaptersWritten ?? b.chapterCount,
+                    written: b.chaptersWritten,
                     target: b.targetChapters
                   })}
                 </div>
@@ -392,6 +409,7 @@ function NovelPage() {
       books,
       booksLoading,
       openWorkspace,
+      initWorkspace,
       refreshBooks,
       openBook,
       creating,
@@ -420,11 +438,10 @@ function NovelPage() {
               <Badge variant="secondary">{book.genre}</Badge>
               <Badge variant="secondary">
                 {t('novel.chapter_progress', {
-                  written: book.chaptersWritten ?? book.chapterCount,
+                  written: book.chaptersWritten,
                   target: book.targetChapters
                 })}
               </Badge>
-              <Badge variant="secondary">{formatWords(book.totalWords)}</Badge>
             </div>
           </div>
           <Button onClick={() => void runAction('write_next')} disabled={actionBusy}>
@@ -557,7 +574,10 @@ function NovelPage() {
         <BookOpen className="size-12 text-muted-foreground" />
         <div className="font-medium text-lg">{t('novel.empty_heading')}</div>
         <div className="max-w-md text-center text-muted-foreground text-sm">{t('novel.empty_description')}</div>
-        <Button onClick={openWorkspace}>
+        <Button onClick={() => void initWorkspace()}>
+          <Sparkles className="size-4" /> {t('novel.init_workspace')}
+        </Button>
+        <Button variant="outline" onClick={openWorkspace}>
           <FolderOpen className="size-4" /> {t('novel.open_workspace')}
         </Button>
       </div>
@@ -565,11 +585,6 @@ function NovelPage() {
   }
 
   return <div className="h-full overflow-y-auto p-6">{book ? renderBook : renderShelf}</div>
-}
-
-function formatWords(words: number): string {
-  if (words >= 10000) return `${(words / 10000).toFixed(1)} 万字`
-  return `${words} 字`
 }
 
 export default NovelPage

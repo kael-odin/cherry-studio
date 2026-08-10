@@ -38,16 +38,10 @@ const books: OutputFor<'novel.list_books'> = [
     platform: 'other',
     genre: '都市',
     targetChapters: 100,
-    chapters: 3,
-    chapterCount: 3,
-    lastChapterNumber: 3,
-    totalWords: 6200,
-    approvedChapters: 2,
-    pendingReview: 1,
-    pendingReviewChapters: 1,
-    failedReview: 0,
-    failedChapters: 0,
-    updatedAt: '2026-08-10T00:00:00Z',
+    chapterWordCount: 2000,
+    language: 'zh',
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
     chaptersWritten: 3
   }
 ]
@@ -58,30 +52,26 @@ const chapters: OutputFor<'novel.list_chapters'>['chapters'] = [
     title: '第一章 风暴',
     status: 'approved',
     wordCount: 2100,
-    auditIssueCount: 0,
-    updatedAt: '2026-08-01T00:00:00Z',
-    fileName: '1_风暴.md',
-    createdAt: '2026-08-01T00:00:00Z'
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-01T00:00:00.000Z'
   },
   {
     number: 2,
     title: '第二章 灯',
     status: 'approved',
     wordCount: 1900,
-    auditIssueCount: 0,
-    updatedAt: '2026-08-02T00:00:00Z',
-    fileName: '2_灯.md',
-    createdAt: '2026-08-02T00:00:00Z'
+    createdAt: '2026-08-02T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z'
   },
   {
     number: 3,
     title: '第三章 潮汐',
     status: 'ready-for-review',
     wordCount: 2200,
-    auditIssueCount: 1,
-    updatedAt: '2026-08-03T00:00:00Z',
-    fileName: '3_潮汐.md',
-    createdAt: '2026-08-03T00:00:00Z'
+    createdAt: '2026-08-03T00:00:00.000Z',
+    updatedAt: '2026-08-03T00:00:00.000Z',
+    auditIssues: ['时间线不一致'],
+    reviewNote: ''
   }
 ]
 
@@ -203,5 +193,26 @@ describe('NovelPage', () => {
       expect(mocks.request).toHaveBeenCalledWith('novel.open_workspace', { root: 'D:/novel/我的小说' })
     })
     expect(await screen.findByText('novel.shelf_heading')).toBeInTheDocument()
+  })
+
+  it('initializes the sample workspace via one-click start', async () => {
+    mocks.request.mockImplementation(async (route: string) => {
+      if (route === 'novel.get_status') return null
+      if (route === 'novel.init_workspace') return 'D:/novel'
+      if (route === 'novel.list_books') return books
+      return null
+    })
+
+    render(<NovelPage />)
+
+    // Empty state shows the quick-start button.
+    expect(await screen.findByText('novel.empty_heading')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'novel.init_workspace' }))
+
+    await waitFor(() => {
+      expect(mocks.request).toHaveBeenCalledWith('novel.init_workspace')
+    })
+    // Seeded sample book appears on the shelf.
+    expect(await screen.findByText('灯塔守夜人')).toBeInTheDocument()
   })
 })

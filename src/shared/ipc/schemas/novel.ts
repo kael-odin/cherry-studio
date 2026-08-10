@@ -17,19 +17,12 @@ const bookSummarySchema = z.object({
   platform: z.string(),
   genre: z.string(),
   targetChapters: z.number(),
-  chapters: z.number(),
-  chapterCount: z.number(),
-  lastChapterNumber: z.number(),
-  totalWords: z.number(),
-  approvedChapters: z.number(),
-  pendingReview: z.number(),
-  pendingReviewChapters: z.number(),
-  failedReview: z.number(),
-  failedChapters: z.number(),
-  recentRunStatus: z.string().nullable().optional(),
+  chapterWordCount: z.number(),
+  language: z.enum(['zh', 'en']).nullable().optional(),
+  createdAt: z.string(),
   updatedAt: z.string(),
-  /** `nextChapterNumber - 1` — present on the wire list summary. */
-  chaptersWritten: z.number().optional()
+  /** `nextChapterNumber - 1` — chapters actually on disk. */
+  chaptersWritten: z.number()
 })
 
 const chapterSummarySchema = z.object({
@@ -37,12 +30,11 @@ const chapterSummarySchema = z.object({
   title: z.string(),
   status: z.string(),
   wordCount: z.number(),
-  auditIssueCount: z.number(),
+  createdAt: z.string(),
   updatedAt: z.string(),
-  fileName: z.string().nullable(),
   auditIssues: z.array(z.string()).optional(),
   reviewNote: z.string().optional(),
-  createdAt: z.string().optional()
+  lengthWarnings: z.array(z.string()).optional()
 })
 
 const apiErrorSchema = z.object({
@@ -56,6 +48,11 @@ export const novelRequestSchemas = {
   // InkOS 项目（workspace）打开/关闭
   'novel.open_workspace': defineRoute({
     input: z.object({ root: z.string().min(1) }),
+    output: z.string()
+  }),
+  'novel.init_workspace': defineRoute({
+    // 一键初始化示例工作区（含示例小说《灯塔守夜人》），返回工作区根目录
+    input: z.void(),
     output: z.string()
   }),
   'novel.close_workspace': defineRoute({
