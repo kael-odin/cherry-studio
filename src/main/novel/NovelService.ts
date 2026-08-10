@@ -6,6 +6,7 @@ import { application } from '@application'
 import { loggerService } from '@logger'
 import { BaseService, Injectable, Phase, ServicePhase } from '@main/core/lifecycle'
 
+import { syncLlmConfigFromCherry } from './cherryLlmBridge'
 import { InkEngineClient, NotFoundError, pickPort } from './inkEngineClient'
 import {
   SAMPLE_BOOK_CONFIG,
@@ -106,7 +107,12 @@ export class NovelService extends BaseService {
     return this.workspacePath
   }
 
-  /** Open an InkOS project root; throws when it is not a project. */
+  /**
+   * Open an InkOS project root; throws when it is not a project.
+   * Cherry's default LLM is bridged into the project when it has no engine LLM
+   * configured yet, so the panel writes with the same model the user picked in
+   * Cherry settings (see cherryLlmBridge).
+   */
   openWorkspace(root: string): string {
     if (!isInkProject(root)) {
       throw new Error(`not an inkos project root: ${root}`)
@@ -115,6 +121,7 @@ export class NovelService extends BaseService {
     this.engine?.stop()
     this.engine = null
     this.lastError = null
+    void syncLlmConfigFromCherry(root)
     logger.info(`Novel workspace opened: ${root}`)
     return root
   }
