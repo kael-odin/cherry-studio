@@ -1,4 +1,4 @@
-import { Badge, Button, Input, Skeleton } from '@cherrystudio/ui'
+import { Badge, Button, Input, Skeleton, Textarea } from '@cherrystudio/ui'
 import { loggerService } from '@logger'
 import { ipcApi } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
@@ -12,6 +12,7 @@ import {
   PenLine,
   Plus,
   RefreshCw,
+  Save,
   Sparkles,
   Wand2
 } from 'lucide-react'
@@ -72,6 +73,14 @@ function NovelPage() {
   const [actionBusy, setActionBusy] = useState(false)
   const [actionLabel, setActionLabel] = useState('')
 
+  // ── 手写编辑 ──
+  const [editing, setEditing] = useState(false)
+  const [editContent, setEditContent] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  // ── 引擎错误横幅 ──
+  const [engineError, setEngineError] = useState<{ code: string; message: string } | null>(null)
+
   const refreshBooks = useCallback(async () => {
     setBooksLoading(true)
     try {
@@ -118,6 +127,8 @@ function NovelPage() {
   const selectChapter = useCallback(async (bookId: string, number: number) => {
     setSelectedChapter(number)
     setChapterDetail(null)
+    setEditing(false)
+    setEditContent('')
     try {
       setChapterDetail(await ipcApi.request('novel.get_chapter', { bookId, chapterNumber: number }))
     } catch (err) {
@@ -133,6 +144,8 @@ function NovelPage() {
     setSelectedChapter(null)
     setActionBusy(false)
     setActionLabel('')
+    setEditing(false)
+    setEditContent('')
     void refreshBooks()
   }, [refreshBooks])
 
@@ -205,6 +218,40 @@ function NovelPage() {
     [book, refreshChapters, t]
   )
 
+  // ── 手写编辑 ──
+  const startEditing = useCallback((detail: ChapterDetail) => {
+    setEditContent(detail.content)
+    setEditing(true)
+  }, [])
+
+  const cancelEditing = useCallback(() => {
+    setEditing(false)
+    setEditContent('')
+  }, [])
+
+  const saveEdit = useCallback(async () => {
+    if (!book || selectedChapter === null) return
+    setSaving(true)
+    try {
+      await ipcApi.request('novel.save_chapter', {
+        bookId: book.id,
+        chapterNumber: selectedChapter,
+        content: editContent
+      })
+      toast.success(t('novel.save_succeeded'))
+      setEditing(false)
+      setEditContent('')
+      // 引擎跑 edit transaction + 版本；刷新目录与正文
+      await refreshChapters(book.id)
+      setChapterDetail(await ipcApi.request('novel.get_chapter', { bookId: book.id, chapterNumber: selectedChapter }))
+    } catch (err) {
+      logger.error('Failed to save chapter', err as Error)
+      toast.error(t('novel.save_failed'))
+    } finally {
+      setSaving(false)
+    }
+  }, [book, selectedChapter, editContent, refreshChapters, t])
+
   // ── 初始化：打开工作区 ──
   const openWorkspace = useCallback(async () => {
     try {
@@ -254,6 +301,25 @@ function NovelPage() {
     })()
   }, [refreshBooks])
 
+  // ── 引擎错误横幅（主进程记录的最后一次引擎错误） ──
+  useEffect(() => {
+    let disposed = false
+    const poll = async () => {
+      if (disposed) return
+      try {
+        setEngineError(await ipcApi.request('novel.engine_error'))
+      } catch {
+        // 引擎错误查询失败 — 忽略
+      }
+    }
+    const timer = setInterval(() => void poll(), 5_000)
+    void poll()
+    return () => {
+      disposed = true
+      clearInterval(timer)
+    }
+  }, [])
+
   // ── 创建书（引擎异步构建设定，轮询 create-status） ──
   const createBook = useCallback(async () => {
     if (!createTitle.trim()) {
@@ -297,6 +363,16 @@ function NovelPage() {
   const renderShelf = useMemo(
     () => (
       <div className="flex flex-col gap-4">
+        {engineError ? (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-2 text-destructive text-sm">
+            <span>
+              {t('novel.engine_error_title')}（{engineError.code}）
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void refreshBooks()}>
+              {t('novel.engine_error_retry')}
+            </Button>
+          </div>
+        ) : null}
         <div className="flex items-center justify-between">
           <h1 className="font-semibold text-xl">{t('novel.shelf_heading')}</h1>
           <div className="flex gap-2">
@@ -408,6 +484,7 @@ function NovelPage() {
     [
       books,
       booksLoading,
+      engineError,
       openWorkspace,
       initWorkspace,
       refreshBooks,
@@ -427,6 +504,16 @@ function NovelPage() {
     const selectedMeta = chapters.find((c) => c.number === selectedChapter) ?? null
     return (
       <div className="flex flex-col gap-4">
+        {engineError ? (
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-2 text-destructive text-sm">
+            <span>
+              {t('novel.engine_error_title')}（{engineError.code}）
+            </span>
+            <Button variant="outline" size="sm" onClick={() => void refreshChapters(book.id)} disabled={actionBusy}>
+              {t('novel.engine_error_retry')}
+            </Button>
+          </div>
+        ) : null}
         <div className="flex items-center gap-3">
           <Button variant="ghost" size="icon" onClick={backToShelf} aria-label={t('novel.back')}>
             <ArrowLeft className="size-4" />
@@ -509,36 +596,101 @@ function NovelPage() {
                   <Badge variant={statusOf(selectedMeta.status).tone}>{t(statusOf(selectedMeta.status).label)}</Badge>
                 </div>
                 <div className="mb-3 flex flex-wrap gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void runAction('audit', selectedMeta.number)}
-                    disabled={actionBusy}>
-                    {t('novel.run_audit')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void runAction('revise', selectedMeta.number)}
-                    disabled={actionBusy}>
-                    {t('novel.run_revise')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void approveChapter(selectedMeta.number)}
-                    disabled={actionBusy}>
-                    {t('novel.approve')}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void rejectChapter(selectedMeta.number)}
-                    disabled={actionBusy}>
-                    {t('novel.reject')}
-                  </Button>
+                  {editing ? (
+                    <>
+                      <Button
+                        variant="default"
+                        size="sm"
+                        onClick={() => void saveEdit()}
+                        disabled={saving || actionBusy}>
+                        {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                        {t('novel.save')}
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={cancelEditing} disabled={saving}>
+                        {t('novel.cancel')}
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => startEditing(chapterDetail)}
+                        disabled={actionBusy}>
+                        <PenLine className="size-4" /> {t('novel.edit')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void runAction('audit', selectedMeta.number)}
+                        disabled={actionBusy}>
+                        {t('novel.run_audit')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void runAction('revise', selectedMeta.number)}
+                        disabled={actionBusy}>
+                        {t('novel.run_revise')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void approveChapter(selectedMeta.number)}
+                        disabled={actionBusy}>
+                        {t('novel.approve')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void rejectChapter(selectedMeta.number)}
+                        disabled={actionBusy}>
+                        {t('novel.reject')}
+                      </Button>
+                    </>
+                  )}
                 </div>
-                <div className="whitespace-pre-wrap font-serif text-[15px] leading-7">{chapterDetail.content}</div>
+                {editing ? (
+                  <Textarea.Input
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    className="min-h-[480px] w-full font-serif text-[15px] leading-7"
+                    aria-label={t('novel.edit')}
+                  />
+                ) : (
+                  <div className="whitespace-pre-wrap font-serif text-[15px] leading-7">{chapterDetail.content}</div>
+                )}
+                {/* 审稿反馈：auditIssues / reviewNote / lengthWarnings */}
+                {!editing && (
+                  <div className="mt-6 flex flex-col gap-2 border-t pt-4">
+                    {selectedMeta.reviewNote ? (
+                      <div className="rounded-lg bg-accent/50 px-3 py-2 text-sm">
+                        <span className="font-medium text-muted-foreground">{t('novel.review_note')}：</span>
+                        {selectedMeta.reviewNote}
+                      </div>
+                    ) : null}
+                    {selectedMeta.auditIssues && selectedMeta.auditIssues.length > 0 ? (
+                      <div className="flex flex-col gap-1.5 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-destructive text-sm">
+                        <span className="font-medium">{t('novel.audit_issues')}</span>
+                        <ul className="list-inside list-disc">
+                          {selectedMeta.auditIssues.map((issue, i) => (
+                            <li key={i}>{issue}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {selectedMeta.lengthWarnings && selectedMeta.lengthWarnings.length > 0 ? (
+                      <div className="flex flex-col gap-1 rounded-lg bg-accent/50 px-3 py-2 text-sm">
+                        <span className="font-medium text-muted-foreground">{t('novel.length_warnings')}</span>
+                        <ul className="list-inside list-disc">
+                          {selectedMeta.lengthWarnings.map((warn, i) => (
+                            <li key={i}>{warn}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -552,11 +704,19 @@ function NovelPage() {
     selectedChapter,
     actionBusy,
     actionLabel,
+    engineError,
+    editing,
+    editContent,
+    saving,
     runAction,
     approveChapter,
     rejectChapter,
     backToShelf,
     selectChapter,
+    refreshChapters,
+    saveEdit,
+    startEditing,
+    cancelEditing,
     t
   ])
 

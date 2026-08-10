@@ -71,7 +71,7 @@ const chapters: OutputFor<'novel.list_chapters'>['chapters'] = [
     createdAt: '2026-08-03T00:00:00.000Z',
     updatedAt: '2026-08-03T00:00:00.000Z',
     auditIssues: ['时间线不一致'],
-    reviewNote: ''
+    reviewNote: '待修：退潮时间需与开头统一'
   }
 ]
 
@@ -193,6 +193,62 @@ describe('NovelPage', () => {
       expect(mocks.request).toHaveBeenCalledWith('novel.open_workspace', { root: 'D:/novel/我的小说' })
     })
     expect(await screen.findByText('novel.shelf_heading')).toBeInTheDocument()
+  })
+
+  it('edits and saves a chapter via the engine', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
+      if (route === 'novel.get_chapter') return chapterDetail
+      if (route === 'novel.save_chapter') return undefined
+      return null
+    })
+
+    render(<NovelPage />)
+    await screen.findByText('novel.shelf_heading')
+    fireEvent.click(screen.getByText('灯塔守夜人'))
+    await screen.findByText('novel.toc_heading')
+    fireEvent.click(screen.getByText('第三章 潮汐'))
+    await screen.findByText(/潮水退去/)
+
+    // Enter edit mode and change the content.
+    fireEvent.click(screen.getByRole('button', { name: 'novel.edit' }))
+    const editor = screen.getByRole('textbox', { name: 'novel.edit' })
+    expect(editor).toHaveValue(chapterDetail.content)
+    fireEvent.change(editor, { target: { value: '新的开头……' } })
+
+    // Save goes through the engine.
+    fireEvent.click(screen.getByRole('button', { name: 'novel.save' }))
+    await waitFor(() => {
+      const calls = mocks.request.mock.calls.filter(([route]) => route === 'novel.save_chapter')
+      expect(calls).toHaveLength(1)
+      expect(calls[0][1]).toMatchObject({ bookId: 'demo', chapterNumber: 3, content: '新的开头……' })
+    })
+    // Back to read mode with the refreshed content.
+    expect(await screen.findByText(/潮水退去/)).toBeInTheDocument()
+  })
+
+  it('shows audit issues and review note for the selected chapter', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return projectStatus
+      if (route === 'novel.list_books') return books
+      if (route === 'novel.get_book') return books.find((b) => b.id === input.bookId) ?? null
+      if (route === 'novel.list_chapters') return { chapters, chapterCount: 3 }
+      if (route === 'novel.get_chapter') return chapterDetail
+      return null
+    })
+
+    render(<NovelPage />)
+    await screen.findByText('novel.shelf_heading')
+    fireEvent.click(screen.getByText('灯塔守夜人'))
+    await screen.findByText('novel.toc_heading')
+    fireEvent.click(screen.getByText('第三章 潮汐'))
+
+    expect(await screen.findByText('novel.audit_issues')).toBeInTheDocument()
+    expect(screen.getByText('时间线不一致')).toBeInTheDocument()
+    expect(screen.getByText(/待修：退潮时间需与开头统一/)).toBeInTheDocument()
   })
 
   it('initializes the sample workspace via one-click start', async () => {
