@@ -4,7 +4,7 @@ import { loggerService } from '@logger'
 import { ipcApi } from '@renderer/ipc'
 import { toast } from '@renderer/services/toast'
 import type { OutputFor } from '@shared/ipc/types'
-import { BookOpen, Flag, FolderOpen, Play, ShieldCheck, X } from 'lucide-react'
+import { BookOpen, Flag, FolderOpen, GitBranch, Play, RotateCcw, ShieldCheck, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -16,6 +16,7 @@ type WorkspaceStatus = OutputFor<'novel.get_status'>
 type ChapterSummary = OutputFor<'novel.list_chapters'>[number]
 type NovelState = OutputFor<'novel.state_read'>
 type ReviewOutcome = OutputFor<'novel.run_review'>
+type RepoStatus = OutputFor<'novel.repo_status'>
 
 /** Read-only novel-spec workspace viewer. P1 panel: open a repo, list
  * chapters/scenes/reviews, preview a chapter and its durable state. State
@@ -41,6 +42,11 @@ function NovelPage() {
   const [quickAssistantModelId] = usePreference('feature.quick_assistant.model_id')
   const [chatDefaultModelId] = usePreference('chat.default_model_id')
   const reviewModelId = quickAssistantModelId ?? chatDefaultModelId
+  const [repoStatus, setRepoStatus] = useState<RepoStatus | null>(null)
+  const [commitMessage, setCommitMessage] = useState('')
+  const [committing, setCommitting] = useState(false)
+  const [rollbackTarget, setRollbackTarget] = useState('')
+  const [rollingBack, setRollingBack] = useState(false)
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -204,6 +210,166 @@ function NovelPage() {
     [selectedId, refreshStatus, t]
   )
 
+  const refreshRepoStatus = useCallback(async () => {
+    if (!status) return
+    try {
+      setRepoStatus(await ipcApi.request('novel.repo_status'))
+    } catch (err) {
+      logger.warn('Failed to read novel repo status', err as Error)
+      setRepoStatus(null)
+    }
+  }, [status])
+
+  useEffect(() => {
+    void refreshRepoStatus()
+  }, [refreshRepoStatus])
+
+  const commitChanges = useCallback(async () => {
+    const message = commitMessage.trim()
+    if (!message) return
+    setCommitting(true)
+    setError(null)
+    try {
+      const result = await ipcApi.request('novel.git_commit', { message })
+      setCommitMessage('')
+      toast.success(t('novel.commit_done', { shortSha: String(result.shortSha) }))
+      await refreshRepoStatus()
+      setChapters(await ipcApi.request('novel.list_chapters'))
+    } catch (err) {
+      logger.error('Failed to commit novel workspace', err as Error)
+      toast.error(t('novel.commit_failed'))
+      setError(String(err))
+    } finally {
+      setCommitting(false)
+    }
+  }, [commitMessage, refreshRepoStatus, t])
+
+  const rollback = useCallback(async () => {
+    const target = rollbackTarget.trim()
+    if (!target || !status) return
+    if (!window.confirm(t('novel.rollback_confirm', { target }))) return
+    setRollingBack(true)
+    setError(null)
+    try {
+      await ipcApi.request('novel.git_rollback', { target })
+      setRollbackTarget('')
+      toast.success(t('novel.rollback_done'))
+      await refreshRepoStatus()
+      await refreshStatus()
+      setChapters(await ipcApi.request('novel.list_chapters'))
+    } catch (err) {
+      logger.error('Failed to roll back novel workspace', err as Error)
+      toast.error(t('novel.rollback_failed'))
+      setError(String(err))
+    } finally {
+      setRollingBack(false)
+    }
+  }, [rollbackTarget, refreshRepoStatus, refreshStatus, t])
+
+  const renderRepoBar = () => {
+    if (!repoStatus || !repoStatus.isGitRepo) return null
+    return (
+      <div className="flex shrink-0 items-center gap-2 border-b bg-muted/30 px-4 py-1.5 text-xs">
+        <GitBranch className="size-3.5 text-muted-foreground" />
+        <span className="font-medium font-mono">{repoStatus.branch}</span>
+        {repoStatus.shortSha && <span className="font-mono text-muted-foreground">@{repoStatus.shortSha}</span>}
+        {repoStatus.dirty ? (
+          <Badge variant="destructive">{t('novel.repo_dirty')}</Badge>
+        ) : (
+          <Badge variant="secondary">{t('novel.repo_clean')}</Badge>
+        )}
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => void refreshRepoStatus()}
+          className="text-muted-foreground underline-offset-2 hover:underline"
+          title={t('novel.repo_refresh')}>
+          {t('novel.repo_refresh')}
+        </button>
+      </div>
+    )
+  }
+
+  const renderRepoSection = () => {
+    if (!repoStatus) return null
+    return (
+      <section className="mt-6 space-y-2.5 border-t pt-4">
+        <h2 className="flex items-center gap-2 font-semibold text-sm">
+          <GitBranch className="size-3.5" />
+          {t('novel.repo_heading')}
+        </h2>
+        <div className="rounded-md border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium font-mono">{repoStatus.branch}</span>
+            {repoStatus.shortSha && <span className="font-mono text-muted-foreground">@{repoStatus.shortSha}</span>}
+            {repoStatus.commitMessage && (
+              <span className="max-w-72 truncate text-muted-foreground" title={repoStatus.commitMessage}>
+                {repoStatus.commitMessage}
+              </span>
+            )}
+            {repoStatus.dirty ? (
+              <Badge variant="destructive">{t('novel.repo_dirty')}</Badge>
+            ) : (
+              <Badge variant="secondary">{t('novel.repo_clean')}</Badge>
+            )}
+            {repoStatus.ahead !== undefined && repoStatus.ahead > 0 && (
+              <Badge variant="outline">
+                {t('novel.repo_ahead')} {repoStatus.ahead}
+              </Badge>
+            )}
+            {repoStatus.behind !== undefined && repoStatus.behind > 0 && (
+              <Badge variant="outline">
+                {t('novel.repo_behind')} {repoStatus.behind}
+              </Badge>
+            )}
+          </div>
+          {(repoStatus.modified?.length ?? 0) +
+            (repoStatus.deleted?.length ?? 0) +
+            (repoStatus.untracked?.length ?? 0) >
+            0 && (
+            <p className="mt-2 text-muted-foreground">
+              {t('novel.repo_changes')}: {t('novel.repo_modified')} {repoStatus.modified?.length ?? 0} ·{' '}
+              {t('novel.repo_deleted')} {repoStatus.deleted?.length ?? 0} · {t('novel.repo_untracked')}{' '}
+              {repoStatus.untracked?.length ?? 0}
+            </p>
+          )}
+          <div className="mt-2.5 flex items-center gap-2">
+            <input
+              type="text"
+              value={commitMessage}
+              onChange={(event) => setCommitMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void commitChanges()
+              }}
+              placeholder={t('novel.commit_placeholder')}
+              className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:border-primary"
+            />
+            <Button size="sm" onClick={() => void commitChanges()} disabled={committing || !commitMessage.trim()}>
+              {committing ? t('novel.commit_running') : t('novel.commit_button')}
+            </Button>
+          </div>
+          <div className="mt-2.5 flex items-center gap-2 border-t pt-2.5">
+            <RotateCcw className="size-3.5 text-muted-foreground" />
+            <input
+              type="text"
+              value={rollbackTarget}
+              onChange={(event) => setRollbackTarget(event.target.value)}
+              placeholder={t('novel.rollback_placeholder')}
+              className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-xs outline-none focus:border-primary"
+            />
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => void rollback()}
+              disabled={rollingBack || !rollbackTarget.trim()}>
+              {rollingBack ? t('novel.rollback_running') : t('novel.rollback_button')}
+            </Button>
+          </div>
+        </div>
+      </section>
+    )
+  }
+
   const renderReviewView = () => {
     if (!selectedId) {
       return (
@@ -332,6 +498,8 @@ function NovelPage() {
             </Button>
           </div>
         </div>
+
+        {renderRepoSection()}
       </div>
     )
   }
@@ -542,6 +710,8 @@ function NovelPage() {
           </Button>
         )}
       </div>
+
+      {renderRepoBar()}
 
       {error && (
         <div

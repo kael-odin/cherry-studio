@@ -55,6 +55,40 @@ export interface ReviewRecordSummary {
   findingCount: number
 }
 
+/** Git status of the workspace as reported by the engine (snake_case → camelCase). */
+export interface RepoStatus {
+  branch: string
+  shortSha: string
+  commitMessage?: string
+  dirty: boolean
+  staged?: string[]
+  modified?: string[]
+  deleted?: string[]
+  untracked?: string[]
+  ahead?: number
+  behind?: number
+  noCommitsYet?: boolean
+  isGitRepo: boolean
+  reason?: string
+}
+
+export interface GitCommitResult {
+  shortSha: string
+  commit: string
+  files?: number
+  insertions?: number
+  deletions?: number
+}
+
+export interface GitRollbackResult {
+  target: string
+  shortSha: string
+  commit: string
+  files?: number
+  resetHard?: boolean
+  commitSummary?: string
+}
+
 /**
  * Novel-spec workspace service: opens a novel-spec git repository and serves
  * chapter/scene/state reads to the renderer. P1 is read-only — state writes
@@ -237,6 +271,36 @@ export class NovelService extends BaseService {
     return JSON.parse(result.text) as Record<string, unknown>
   }
 
+  /** Git status of the workspace, reported by the engine process. */
+  async repoStatus(): Promise<RepoStatus> {
+    const engine = await this.requireEngine()
+    const result = await engine.callTool('git_status', { include_untracked: true })
+    if (result.isError) {
+      throw new Error(result.text)
+    }
+    return parseRepoStatus(result.text)
+  }
+
+  /** Stage all workspace changes and commit with the given message (engine-side git). */
+  async commitChanges(message: string): Promise<GitCommitResult> {
+    const engine = await this.requireEngine()
+    const result = await engine.callTool('git_commit', { message })
+    if (result.isError) {
+      throw new Error(result.text)
+    }
+    return parseGitCommit(result.text)
+  }
+
+  /** Hard-reset the workspace to a target commit; the engine refuses while dirty. */
+  async rollback(target: string): Promise<GitRollbackResult> {
+    const engine = await this.requireEngine()
+    const result = await engine.callTool('git_rollback', { target })
+    if (result.isError) {
+      throw new Error(result.text)
+    }
+    return parseGitRollback(result.text)
+  }
+
   private async requireEngine(): Promise<NovelEngineClient> {
     this.requireWorkspace()
     if (!this.engine) {
@@ -250,4 +314,62 @@ export class NovelService extends BaseService {
 /** Engine binary path: REASONIX_NOVEL_BIN env override, else `reasonix-novel` on PATH. */
 function engineBinary(): string {
   return process.env.REASONIX_NOVEL_BIN ?? 'reasonix-novel'
+}
+
+/**
+ * The engine speaks snake_case (git status porcelain convention); the IPC
+ * schemas are camelCase. Decode and rename explicitly so no field is silently
+ * stripped by zod (the same trap that bit timelineEventSchema).
+ */
+
+type SnakeRecord = Record<string, unknown>
+
+function parseRepoStatus(text: string): RepoStatus {
+  const raw = JSON.parse(text) as SnakeRecord
+  return {
+    branch: String(raw.branch ?? ''),
+    shortSha: String(raw.short_sha ?? ''),
+    commitMessage: raw.commit_message === undefined ? undefined : String(raw.commit_message),
+    dirty: Boolean(raw.dirty),
+    staged: toStringArray(raw.staged),
+    modified: toStringArray(raw.modified),
+    deleted: toStringArray(raw.deleted),
+    untracked: toStringArray(raw.untracked),
+    ahead: toOptionalNumber(raw.ahead),
+    behind: toOptionalNumber(raw.behind),
+    noCommitsYet: raw.no_commits_yet === undefined ? undefined : Boolean(raw.no_commits_yet),
+    isGitRepo: Boolean(raw.is_git_repo),
+    reason: raw.reason === undefined ? undefined : String(raw.reason)
+  }
+}
+
+function parseGitCommit(text: string): GitCommitResult {
+  const raw = JSON.parse(text) as SnakeRecord
+  return {
+    shortSha: String(raw.short_sha ?? ''),
+    commit: String(raw.commit ?? ''),
+    files: toOptionalNumber(raw.files),
+    insertions: toOptionalNumber(raw.insertions),
+    deletions: toOptionalNumber(raw.deletions)
+  }
+}
+
+function parseGitRollback(text: string): GitRollbackResult {
+  const raw = JSON.parse(text) as SnakeRecord
+  return {
+    target: String(raw.target ?? ''),
+    shortSha: String(raw.short_sha ?? ''),
+    commit: String(raw.commit ?? ''),
+    files: toOptionalNumber(raw.files),
+    resetHard: raw.reset_hard === undefined ? undefined : Boolean(raw.reset_hard),
+    commitSummary: raw.commit_summary === undefined ? undefined : String(raw.commit_summary)
+  }
+}
+
+function toStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.map(String) : undefined
+}
+
+function toOptionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined
 }

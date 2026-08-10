@@ -160,6 +160,39 @@ const reviewOutcomeSchema = z.object({
   consistency: z.string()
 })
 
+const gitStatusSchema = z.object({
+  branch: z.string(),
+  shortSha: z.string(),
+  commitMessage: z.string().optional(),
+  dirty: z.boolean(),
+  staged: z.array(z.string()).optional(),
+  modified: z.array(z.string()).optional(),
+  deleted: z.array(z.string()).optional(),
+  untracked: z.array(z.string()).optional(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  noCommitsYet: z.boolean().optional(),
+  isGitRepo: z.boolean(),
+  reason: z.string().optional()
+})
+
+const gitCommitResultSchema = z.object({
+  shortSha: z.string(),
+  commit: z.string(),
+  files: z.number().int().nonnegative().optional(),
+  insertions: z.number().int().optional(),
+  deletions: z.number().int().optional()
+})
+
+const gitRollbackResultSchema = z.object({
+  target: z.string(),
+  shortSha: z.string(),
+  commit: z.string(),
+  files: z.number().int().nonnegative().optional(),
+  resetHard: z.boolean().optional(),
+  commitSummary: z.string().optional()
+})
+
 // Chapter ids follow `vNN-cNNN` (mirrors the reference runtime's chapterNumber).
 const chapterIdSchema = z.string().regex(/^v\d+-c\d+$/, 'chapter_id must match vNN-cNNN')
 
@@ -212,5 +245,21 @@ export const novelRequestSchemas = {
       status: z.enum(['reviewed', 'final'])
     }),
     output: z.record(z.string(), z.unknown())
+  }),
+  'novel.repo_status': defineRoute({
+    // Git status of the open workspace, reported by the engine process.
+    input: z.void(),
+    output: gitStatusSchema
+  }),
+  'novel.git_commit': defineRoute({
+    // Stage all changes and commit with the given message (engine-side git).
+    input: z.object({ message: z.string().min(1) }),
+    output: gitCommitResultSchema
+  }),
+  'novel.git_rollback': defineRoute({
+    // Hard-reset the workspace to a target commit; the engine refuses while
+    // the working tree is dirty.
+    input: z.object({ target: z.string().min(1) }),
+    output: gitRollbackResultSchema
   })
 }

@@ -21,5 +21,8 @@ export const novelHandlers: IpcHandlersFor<typeof novelRequestSchemas> = {
   'novel.list_reviews': async (input) => application.get('NovelService').listReviews(input.chapterId),
   'novel.state_read': async (input) => application.get('NovelService').stateRead(input.asOfChapter ?? 0),
   'novel.run_review': async (input) => application.get('NovelService').runReview(input.chapterId, input.modelId),
-  'novel.finalize': async (input) => application.get('NovelService').finalizeChapter(input.chapterId, input.status)
+  'novel.finalize': async (input) => application.get('NovelService').finalizeChapter(input.chapterId, input.status),
+  'novel.repo_status': async () => application.get('NovelService').repoStatus(),
+  'novel.git_commit': async (input) => application.get('NovelService').commitChanges(input.message),
+  'novel.git_rollback': async (input) => application.get('NovelService').rollback(input.target)
 }

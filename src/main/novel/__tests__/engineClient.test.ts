@@ -1,4 +1,5 @@
-import { cpSync, mkdtempSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -89,4 +90,50 @@ describe('NovelEngineClient (real engine)', () => {
       engine.stop()
     }
   })
+
+  it('reports git status and commits through the engine', async () => {
+    const engine = new NovelEngineClient(ENGINE_BIN, gitCopy())
+    try {
+      await engine.start()
+      const status = await engine.callTool('git_status', { include_untracked: true })
+      expect(status.isError).toBe(false)
+      const parsedStatus = JSON.parse(status.text) as { is_git_repo?: boolean; branch?: string; dirty?: boolean }
+      expect(parsedStatus.is_git_repo).toBe(true)
+      expect(parsedStatus.branch).toBe('main')
+      expect(parsedStatus.dirty).toBe(true)
+
+      const commit = await engine.callTool('git_commit', { message: 'test: engine commit' })
+      expect(commit.isError).toBe(false)
+      const parsedCommit = JSON.parse(commit.text) as { short_sha?: string }
+      expect(parsedCommit.short_sha).toMatch(/^[0-9a-f]{7}$/)
+
+      const after = await engine.callTool('git_status', { include_untracked: true })
+      const parsedAfter = JSON.parse(after.text) as { dirty?: boolean; commit_message?: string }
+      expect(parsedAfter.dirty).toBe(false)
+      expect(parsedAfter.commit_message).toBe('test: engine commit')
+    } finally {
+      engine.stop()
+    }
+  })
 })
+
+/** Workspace copy with an initialized git repo (one commit + dirty change). */
+function gitCopy(): string {
+  const root = sampleCopy()
+  git(root, 'init', '-b', 'main')
+  git(root, 'config', 'user.name', 'Novel Engine Test')
+  git(root, 'config', 'user.email', 'engine-test@example.com')
+  git(root, 'add', '-A')
+  git(root, 'commit', '-m', 'initial sample')
+  // Dirty the tree: a real change the engine commit will pick up.
+  const chapterPath = path.join(root, 'chapters', 'v01-c003.md')
+  writeFileSync(chapterPath, readFileSync(chapterPath, 'utf8') + '\n')
+  return root
+}
+
+function git(root: string, ...args: string[]): void {
+  const result = spawnSync('git', ['-C', root, ...args], { encoding: 'utf8' })
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
+  }
+}

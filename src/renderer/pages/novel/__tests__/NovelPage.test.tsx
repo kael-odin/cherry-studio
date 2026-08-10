@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   request: vi.fn(),
-  selectFolder: vi.fn()
+  selectFolder: vi.fn(),
+  confirm: vi.fn(() => true)
 }))
 
 vi.mock('@renderer/ipc', () => ({
@@ -104,11 +105,27 @@ const novelState: OutputFor<'novel.state_read'> = {
   pov: { chapter: 'v01-c003', viewpoint: 'close-third, Aren', tense: 'past' }
 }
 
+const repoStatus: OutputFor<'novel.repo_status'> = {
+  branch: 'main',
+  shortSha: 'abc1234',
+  commitMessage: 'feat: first draft',
+  dirty: true,
+  modified: ['chapters/v01-c003.md'],
+  deleted: [],
+  untracked: ['reviews/v01-c003-004.json'],
+  ahead: 1,
+  behind: 0,
+  isGitRepo: true
+}
+
 import NovelPage from '../NovelPage'
 
 beforeEach(() => {
   // window.api is the preload bridge; `file.selectFolder` is used by openWorkspace.
   Object.assign(window.api, { file: { selectFolder: mocks.selectFolder } })
+  mocks.confirm.mockReset()
+  mocks.confirm.mockReturnValue(true)
+  window.confirm = mocks.confirm
 })
 
 afterEach(() => {
@@ -178,6 +195,81 @@ describe('NovelPage', () => {
       const stateCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.state_read')
       expect(stateCalls).toHaveLength(2)
       expect(stateCalls[1][1]).toEqual({ asOfChapter: 1 })
+    })
+  })
+
+  it('shows repo status and commits the workspace from the review tab', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return status
+      if (route === 'novel.open_workspace') return input.root
+      if (route === 'novel.list_chapters') return chapters
+      if (route === 'novel.repo_status') return repoStatus
+      if (route === 'novel.git_commit') return { shortSha: 'def5678', commit: 'deadbeef' }
+      return null
+    })
+    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
+
+    render(<NovelPage />)
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
+    })
+
+    // Repo bar shows the git state.
+    expect(await screen.findByText('main')).toBeInTheDocument()
+    expect(screen.getByText('@abc1234')).toBeInTheDocument()
+    expect(screen.getByText('novel.repo_dirty')).toBeInTheDocument()
+
+    // Select a chapter, then open the review tab to find the repository section.
+    fireEvent.click(screen.getByRole('button', { name: /The Fever/ }))
+    await screen.findByText('novel.tab_review')
+    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_review' }))
+    await screen.findByText('novel.review_heading')
+    expect(screen.getByText('novel.repo_heading')).toBeInTheDocument()
+    expect(screen.getByText('feat: first draft')).toBeInTheDocument()
+    expect(screen.getByText(/novel.repo_ahead/)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('novel.commit_placeholder'), {
+      target: { value: 'feat: first draft' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'novel.commit_button' }))
+
+    await waitFor(() => {
+      const commitCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.git_commit')
+      expect(commitCalls).toHaveLength(1)
+      expect(commitCalls[0][1]).toEqual({ message: 'feat: first draft' })
+    })
+  })
+
+  it('rolls back to a target commit after confirmation', async () => {
+    mocks.request.mockImplementation(async (route: string, input?: any) => {
+      if (route === 'novel.get_status') return status
+      if (route === 'novel.open_workspace') return input.root
+      if (route === 'novel.list_chapters') return chapters
+      if (route === 'novel.repo_status') return repoStatus
+      if (route === 'novel.git_rollback') return { target: 'abc1234', shortSha: 'abc1234', commit: 'aabbcc' }
+      return null
+    })
+    mocks.selectFolder.mockResolvedValue('D:/repo/sample-novel')
+
+    render(<NovelPage />)
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole('button', { name: 'novel.open_workspace' })[0])
+    })
+    fireEvent.click(screen.getByRole('button', { name: /The Fever/ }))
+    await screen.findByText('novel.tab_review')
+    fireEvent.click(screen.getByRole('button', { name: 'novel.tab_review' }))
+    await screen.findByText('novel.repo_heading')
+
+    fireEvent.change(screen.getByPlaceholderText('novel.rollback_placeholder'), { target: { value: 'abc1234' } })
+    fireEvent.click(screen.getByRole('button', { name: 'novel.rollback_button' }))
+
+    await waitFor(() => {
+      expect(mocks.confirm).toHaveBeenCalledWith('novel.rollback_confirm')
+      const rollbackCalls = mocks.request.mock.calls.filter(([route]) => route === 'novel.git_rollback')
+      expect(rollbackCalls).toHaveLength(1)
+      expect(rollbackCalls[0][1]).toEqual({ target: 'abc1234' })
     })
   })
 })
