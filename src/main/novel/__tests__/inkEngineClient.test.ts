@@ -40,6 +40,23 @@ const ENGINE_ENTRY = path.join(INKOS_ROOT, 'packages', 'studio', 'dist', 'api', 
 const PROJECT_ROOT = path.join(INKOS_ROOT, 'test-project')
 const engineAvailable = existsSync(ENGINE_ENTRY) && existsSync(path.join(PROJECT_ROOT, 'inkos.json'))
 
+/** Resolves when the engine has sent an event with the given name (once). */
+function waitForEvent(engine: InkEngineClient, name: string, timeoutMs = 15_000): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`engine event '${name}' not seen within ${timeoutMs}ms`)),
+      timeoutMs
+    )
+    const onEvent = (event: string, data: unknown) => {
+      if (event !== name) return
+      clearTimeout(timer)
+      engine.onEvent(null)
+      resolve(data)
+    }
+    engine.onEvent(onEvent)
+  })
+}
+
 describe.skipIf(!engineAvailable)('InkEngineClient against the real engine', () => {
   it('spawns the engine, answers the project probe, lists books, and stops cleanly', async () => {
     const engine = new InkEngineClient(process.execPath, ENGINE_ENTRY, PROJECT_ROOT, pickPort())
@@ -90,6 +107,27 @@ describe.skipIf(!engineAvailable)('InkEngineClient against the real engine', () 
       }
       expect(chapter.chapterNumber).toBe(3)
       expect(chapter.content).toContain('潮汐')
+    } finally {
+      engine.stop()
+    }
+  }, 90_000)
+
+  it('subscribes to the events stream and receives lifecycle broadcasts', async () => {
+    const engine = new InkEngineClient(process.execPath, ENGINE_ENTRY, PROJECT_ROOT, pickPort())
+    try {
+      await engine.start()
+      engine.subscribeEvents(() => {})
+      const started = waitForEvent(engine, 'write:start')
+
+      // write-next broadcasts write:start (then write:complete or write:error —
+      // this fixture has no LLM, so it will likely error; both prove the pipe).
+      const write = engine.request('POST', '/api/v1/books/lighthouse-keeper/write-next', {}, 30_000)
+      await started
+      try {
+        await write
+      } catch {
+        // LLM-less fixture: expected to fail after broadcasting start.
+      }
     } finally {
       engine.stop()
     }
